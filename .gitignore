@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+supply-scan-report.json
+supply-scan-report.html
+*.md

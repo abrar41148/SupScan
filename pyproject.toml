@@ -1,0 +1,9 @@
+[project]
+name = "supply-scan"
+version = "0.0.0"
+description = "Working title. Report known-vulnerable dependency versions and the release that fixes them."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+supply-scan = "supply_scan.cli:main"
