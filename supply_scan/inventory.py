@@ -92,18 +92,115 @@ def parse_package_lock(text: str, manifest: str) -> list[Package]:
     return _npm_lock_v1(data, manifest)
 
 
+_NPM_PROD_FIELDS = ("dependencies", "optionalDependencies", "peerDependencies")
+
+
+def _npm_project_entry(key: str) -> bool:
+    return all(part != "node_modules" for part in key.split("/"))
+
+
+def _npm_dep_names(meta: dict, fields: tuple[str, ...]) -> list[str]:
+    names: list[str] = []
+    for field in fields:
+        entries = meta.get(field)
+        if not isinstance(entries, dict):
+            continue
+        for name in entries:
+            if isinstance(name, str) and name:
+                names.append(name)
+    return names
+
+
+def _npm_unwrap(packages: dict, key: str) -> str:
+    seen: set[str] = set()
+    current = key
+    while current not in seen:
+        seen.add(current)
+        meta = packages.get(current)
+        if not isinstance(meta, dict) or not meta.get("link"):
+            return current
+        target = meta.get("resolved")
+        if not isinstance(target, str):
+            return current
+        target = target.removeprefix("./")
+        if target not in packages:
+            return current
+        current = target
+    return current
+
+
+def _npm_resolve(packages: dict, from_key: str, dep_name: str) -> str | None:
+    """Find the installed entry for dep_name required by the package at from_key.
+
+    Node looks in node_modules under the requiring package, then under each
+    parent directory. A scope folder is part of the package path, not a parent.
+    """
+    parts = from_key.split("/") if from_key else []
+    while True:
+        prefix = "/".join(parts)
+        key = f"{prefix}/node_modules/{dep_name}" if prefix else f"node_modules/{dep_name}"
+        if isinstance(packages.get(key), dict):
+            return _npm_unwrap(packages, key)
+        if not parts:
+            return None
+        parts.pop()
+        if parts and parts[-1].startswith("@"):
+            parts.pop()
+        if parts and parts[-1] == "node_modules":
+            parts.pop()
+
+
+def _npm_walk(packages: dict, seeds: list[str], blocked: set[str]) -> set[str]:
+    reached: set[str] = set()
+    seen: set[str] = set()
+    stack = list(seeds)
+    while stack:
+        key = stack.pop()
+        if key in seen or key in blocked:
+            continue
+        seen.add(key)
+        meta = packages.get(key)
+        if not isinstance(meta, dict):
+            continue
+        if meta.get("link"):
+            target = _npm_unwrap(packages, key)
+            if target != key:
+                stack.append(target)
+            continue
+        if not _npm_project_entry(key):
+            reached.add(key)
+        for dep_name in _npm_dep_names(meta, _NPM_PROD_FIELDS):
+            resolved = _npm_resolve(packages, key, dep_name)
+            if resolved:
+                stack.append(resolved)
+    return reached
+
+
 def _npm_lock_v2(packages: dict, manifest: str) -> list[Package]:
     direct_prod: set[str] = set()
     direct_dev: set[str] = set()
+    prod_seeds: list[str] = []
+    dev_seeds: list[str] = []
     for key, meta in packages.items():
-        if not isinstance(meta, dict):
+        if not isinstance(key, str) or not isinstance(meta, dict):
             continue
-        if any(part == "node_modules" for part in str(key).split("/")):
+        if not _npm_project_entry(key):
             continue
-        direct_prod.update((meta.get("dependencies") or {}).keys())
-        direct_prod.update((meta.get("optionalDependencies") or {}).keys())
-        direct_prod.update((meta.get("peerDependencies") or {}).keys())
-        direct_dev.update((meta.get("devDependencies") or {}).keys())
+        prod_names = _npm_dep_names(meta, _NPM_PROD_FIELDS)
+        dev_names = _npm_dep_names(meta, ("devDependencies",))
+        direct_prod.update(prod_names)
+        direct_dev.update(dev_names)
+        for name in prod_names:
+            resolved = _npm_resolve(packages, key, name)
+            if resolved:
+                prod_seeds.append(resolved)
+        for name in dev_names:
+            resolved = _npm_resolve(packages, key, name)
+            if resolved:
+                dev_seeds.append(resolved)
+
+    prod_paths = _npm_walk(packages, prod_seeds, set())
+    dev_paths = _npm_walk(packages, dev_seeds, prod_paths)
 
     found: list[Package] = []
     for key, meta in packages.items():
@@ -115,13 +212,17 @@ def _npm_lock_v2(packages: dict, manifest: str) -> list[Package]:
         version = meta.get("version")
         if not name or not version:
             continue
-        if name in direct_prod:
-            direct, dev = True, False
-        elif name in direct_dev:
-            direct, dev = True, True
+        if key in prod_paths:
+            dev = False
+        elif key in dev_paths:
+            dev = True
+        elif meta.get("dev") or meta.get("devOptional"):
+            dev = True
+        elif name in direct_dev and name not in direct_prod:
+            dev = True
         else:
-            direct = False
-            dev = bool(meta.get("dev") or meta.get("devOptional"))
+            dev = False
+        direct = name in direct_prod or name in direct_dev
         found.append(Package("npm", name, str(version), direct, dev, manifest))
     return found
 

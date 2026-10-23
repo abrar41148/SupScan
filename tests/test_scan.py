@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -24,6 +25,73 @@ LOCK = {
         "node_modules/lodash": {"version": "4.17.20"},
         "node_modules/vitest": {"version": "1.6.0", "dev": True},
         "node_modules/picocolors": {"version": "1.0.0"},
+    },
+}
+
+# Transitive entries omit "dev" on purpose. The label has to come from the graph.
+NPM_DEV_TREE = {
+    "lockfileVersion": 3,
+    "packages": {
+        "": {
+            "dependencies": {"lib": "^1.0.0", "app": "*"},
+            "optionalDependencies": {"opt": "^1.0.0"},
+            "peerDependencies": {"peer": "^1.0.0"},
+            "devDependencies": {"vitest": "^1.0.0", "tool": "^1.0.0"},
+        },
+        "node_modules/app": {"resolved": "packages/app", "link": True},
+        "packages/app": {
+            "dependencies": {"app-lib": "^1.0.0", "nested-ws": "1.0.0"},
+            "devDependencies": {"app-test": "^1.0.0"},
+        },
+        "packages/app/node_modules/nested-ws": {"version": "1.0.0"},
+        "node_modules/lib": {
+            "version": "1.0.0",
+            "dependencies": {
+                "shared": "^2.0.0",
+                "tool": "^1.0.0",
+                "nested-prod": "1.2.0",
+            },
+        },
+        "node_modules/lib/node_modules/nested-prod": {"version": "1.2.0"},
+        "node_modules/shared": {"version": "2.0.0"},
+        "node_modules/tool": {
+            "version": "1.0.0",
+            "dependencies": {"lib": "^1.0.0"},
+        },
+        "node_modules/opt": {"version": "1.0.0"},
+        "node_modules/peer": {"version": "1.0.0"},
+        "node_modules/vitest": {
+            "version": "1.6.0",
+            "dependencies": {
+                "only-dev": "^3.0.0",
+                "shared": "^1.0.0",
+                "@scope/devtool": "^1.0.0",
+            },
+        },
+        "node_modules/vitest/node_modules/shared": {"version": "1.0.0"},
+        "node_modules/only-dev": {
+            "version": "3.0.0",
+            "dependencies": {"only-dev-nested": "^4.0.0", "shared": "^2.0.0"},
+        },
+        "node_modules/only-dev-nested": {"version": "4.0.0"},
+        "node_modules/@scope/devtool": {
+            "version": "1.0.0",
+            "dependencies": {"under-scope": "1.0.0"},
+        },
+        "node_modules/@scope/devtool/node_modules/under-scope": {"version": "1.0.0"},
+        "node_modules/app-lib": {
+            "version": "1.0.0",
+            "dependencies": {"app-lib-trans": "^1.0.0"},
+        },
+        "node_modules/app-lib-trans": {"version": "1.0.0"},
+        "node_modules/app-test": {
+            "version": "1.0.0",
+            "dependencies": {"app-test-trans": "^1.0.0"},
+        },
+        "node_modules/app-test-trans": {"version": "1.0.0"},
+        "node_modules/orphan-dev": {"version": "0.0.1", "dev": True},
+        "node_modules/orphan-optional": {"version": "0.0.1", "devOptional": True},
+        "node_modules/orphan": {"version": "0.0.1"},
     },
 }
 
@@ -146,7 +214,74 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(found["lodash"].dev)
         self.assertTrue(found["vitest"].dev)
         self.assertFalse(found["picocolors"].direct)
+        self.assertFalse(found["picocolors"].dev)
         self.assertNotIn("express", found)
+
+    def test_npm_dev_only_transitive_is_dev_and_does_not_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "package-lock.json").write_text(json.dumps(NPM_DEV_TREE), encoding="utf-8")
+            found = {(pkg.name, pkg.version): pkg for pkg in scan_tree(Path(tmp))}
+
+        def pkg(name, version):
+            self.assertIn((name, version), found)
+            return found[(name, version)]
+
+        lib = pkg("lib", "1.0.0")
+        self.assertTrue(lib.direct)
+        self.assertFalse(lib.dev)
+        vitest = pkg("vitest", "1.6.0")
+        self.assertTrue(vitest.direct)
+        self.assertTrue(vitest.dev)
+
+        only = pkg("only-dev", "3.0.0")
+        self.assertFalse(only.direct)
+        self.assertTrue(only.dev)
+        nested = pkg("only-dev-nested", "4.0.0")
+        self.assertFalse(nested.direct)
+        self.assertTrue(nested.dev)
+        self.assertTrue(pkg("@scope/devtool", "1.0.0").dev)
+        self.assertFalse(pkg("@scope/devtool", "1.0.0").direct)
+        self.assertTrue(pkg("under-scope", "1.0.0").dev)
+        self.assertFalse(pkg("under-scope", "1.0.0").direct)
+
+        shared_prod = pkg("shared", "2.0.0")
+        self.assertFalse(shared_prod.direct)
+        self.assertFalse(shared_prod.dev)
+        shared_dev = pkg("shared", "1.0.0")
+        self.assertFalse(shared_dev.direct)
+        self.assertTrue(shared_dev.dev)
+
+        tool = pkg("tool", "1.0.0")
+        self.assertTrue(tool.direct)
+        self.assertFalse(tool.dev)
+        self.assertTrue(pkg("opt", "1.0.0").direct)
+        self.assertFalse(pkg("opt", "1.0.0").dev)
+        self.assertTrue(pkg("peer", "1.0.0").direct)
+        self.assertFalse(pkg("peer", "1.0.0").dev)
+
+        self.assertTrue(pkg("app-lib", "1.0.0").direct)
+        self.assertFalse(pkg("app-lib", "1.0.0").dev)
+        self.assertFalse(pkg("app-lib-trans", "1.0.0").direct)
+        self.assertFalse(pkg("app-lib-trans", "1.0.0").dev)
+        self.assertTrue(pkg("nested-ws", "1.0.0").direct)
+        self.assertFalse(pkg("nested-ws", "1.0.0").dev)
+        self.assertTrue(pkg("app-test", "1.0.0").direct)
+        self.assertTrue(pkg("app-test", "1.0.0").dev)
+        self.assertFalse(pkg("app-test-trans", "1.0.0").direct)
+        self.assertTrue(pkg("app-test-trans", "1.0.0").dev)
+        self.assertFalse(pkg("nested-prod", "1.2.0").direct)
+        self.assertFalse(pkg("nested-prod", "1.2.0").dev)
+
+        self.assertTrue(pkg("orphan-dev", "0.0.1").dev)
+        self.assertTrue(pkg("orphan-optional", "0.0.1").dev)
+        self.assertFalse(pkg("orphan", "0.0.1").dev)
+        self.assertFalse(pkg("orphan", "0.0.1").direct)
+
+        only.vulns = [Finding("GHSA-dev", None, "high", "", "3.0.1", "vulnerability", True)]
+        self.assertEqual(exit_code([only, lib], strict=False), 0)
+        self.assertEqual(exit_code([only], strict=True), 1)
+        tool.vulns = [Finding("GHSA-tool", None, "high", "", "1.0.1", "vulnerability", True)]
+        self.assertEqual(exit_code([tool], strict=False), 1)
 
     def test_package_json_range_is_unchecked_without_a_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -268,6 +403,28 @@ class MatchTests(unittest.TestCase):
         annotate([package], hydrated)
         self.assertEqual(package.recommend, "4.17.21")
         self.assertEqual(package.vulns[0].severity, "critical")
+
+    def test_two_stub_ids_are_fetched_together(self):
+        entered = threading.Barrier(2)
+        calls = []
+        lock = threading.Lock()
+
+        def fetch(osv_id):
+            with lock:
+                calls.append(osv_id)
+            entered.wait(timeout=2)
+            return _advisory(osv_id=osv_id)
+
+        hydrated = hydrate(
+            [{"vulns": [{"id": "GHSA-1"}, {"id": "GHSA-2"}, {"id": "GHSA-1"}]}],
+            fetch,
+        )
+        self.assertEqual(sorted(calls), ["GHSA-1", "GHSA-2"])
+        bodies = hydrated[0]["vulns"]
+        self.assertEqual([body["id"] for body in bodies], ["GHSA-1", "GHSA-2", "GHSA-1"])
+        self.assertIn("affected", bodies[0])
+        self.assertIn("affected", bodies[1])
+        self.assertIs(bodies[0], bodies[2])
 
     def test_withdrawn_and_unfixed(self):
         package = Package("npm", "lodash", "1.0.0", True, False, "package-lock.json")

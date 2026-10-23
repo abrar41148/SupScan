@@ -317,7 +317,7 @@ def hydrate(results: list[dict], fetch=None) -> list[dict]:
     details: dict[str, dict] = {}
     unique = list(dict.fromkeys(needed))
     if unique:
-        if fetch is _fetch_vuln and len(unique) > 1:
+        if len(unique) > 1:
             with ThreadPoolExecutor(max_workers=8) as pool:
                 for osv_id, full in zip(unique, pool.map(fetch, unique)):
                     details[osv_id] = full
