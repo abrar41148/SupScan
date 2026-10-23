@@ -47,6 +47,7 @@ class Package:
     unchecked_reason: str | None = None
     vulns: list = field(default_factory=list)
     recommend: str | None = None
+    alias: str | None = None
 
 
 def pypi_name(name: str) -> str:
@@ -62,6 +63,7 @@ def _unchecked(
     reason: str,
     *,
     direct: bool = True,
+    alias: str | None = None,
 ) -> Package:
     return Package(
         ecosystem=ecosystem,
@@ -71,6 +73,7 @@ def _unchecked(
         dev=dev,
         manifest=manifest,
         unchecked_reason=reason,
+        alias=alias,
     )
 
 
@@ -334,48 +337,201 @@ def parse_pnpm_lock(text: str, manifest: str) -> list[Package]:
     return found
 
 
+_GO_VERSION = re.compile(r"^v\d")
+
+
+def _go_strip_comment(raw: str) -> str:
+    out: list[str] = []
+    quote = None
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if quote:
+            out.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "\"'":
+            quote = char
+            out.append(char)
+            index += 1
+            continue
+        if char == "/" and index + 1 < len(raw) and raw[index + 1] == "/":
+            break
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _go_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    current: list[str] = []
+    quote = None
+    for char in text:
+        if quote:
+            if char == quote:
+                quote = None
+            else:
+                current.append(char)
+            continue
+        if char in "\"'":
+            quote = char
+            continue
+        if char.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+            continue
+        current.append(char)
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def _go_replace(text: str) -> tuple[str, str | None, str, str | None] | None:
+    if "=>" not in text:
+        return None
+    left_text, right_text = text.split("=>", 1)
+    left = _go_tokens(left_text)
+    right = _go_tokens(right_text)
+    if len(left) == 1:
+        left_path, left_version = left[0], None
+    elif len(left) == 2:
+        left_path, left_version = left[0], left[1]
+    else:
+        return None
+    if len(right) == 1:
+        return left_path, left_version, right[0], None
+    if len(right) == 2 and _GO_VERSION.match(right[1]):
+        return left_path, left_version, right[0], right[1]
+    return None
+
+
 def parse_go_mod(text: str, manifest: str) -> list[Package]:
-    found: list[Package] = []
-    in_block = False
+    requires: list[tuple[str, str, bool]] = []
+    replaces: list[tuple[str, str | None, str, str | None]] = []
+    in_require = False
+    in_replace = False
     for raw in text.splitlines():
         indirect = "// indirect" in raw
-        line = raw.split("//", 1)[0].strip()
-        if line.startswith("require ("):
-            in_block = True
+        line = _go_strip_comment(raw).strip()
+        if not line:
+            continue
+        if line.startswith("require (") or line == "require (":
+            in_require = True
+            continue
+        if line.startswith("replace (") or line == "replace (":
+            in_replace = True
             continue
         if line == ")":
-            in_block = False
+            in_require = False
+            in_replace = False
             continue
-        if in_block:
+        if in_require:
             parts = line.split()
             if len(parts) >= 2:
-                found.append(Package("Go", parts[0], parts[1], not indirect, False, manifest))
+                requires.append((parts[0], parts[1], indirect))
+            continue
+        if in_replace:
+            parsed = _go_replace(line)
+            if parsed:
+                replaces.append(parsed)
             continue
         if line.startswith("require "):
             parts = line.split()
             if len(parts) >= 3:
-                found.append(Package("Go", parts[1], parts[2], not indirect, False, manifest))
+                requires.append((parts[1], parts[2], indirect))
+            continue
+        if line.startswith("replace "):
+            parsed = _go_replace(line[len("replace "):])
+            if parsed:
+                replaces.append(parsed)
+
+    specific: dict[tuple[str, str], tuple[str, str | None]] = {}
+    general: dict[str, tuple[str, str | None]] = {}
+    for left_path, left_version, right_path, right_version in replaces:
+        if left_version:
+            specific[(left_path, left_version)] = (right_path, right_version)
+        else:
+            general[left_path] = (right_path, right_version)
+
+    found: list[Package] = []
+    for path, version, indirect in requires:
+        replacement = specific.get((path, version))
+        if replacement is None:
+            replacement = general.get(path)
+        direct = not indirect
+        if replacement is None:
+            found.append(Package("Go", path, version, direct, False, manifest))
+            continue
+        right_path, right_version = replacement
+        if right_version is None:
+            found.append(_unchecked(
+                "Go", path, version, False, manifest,
+                f"replaced by local path {right_path}",
+                direct=direct,
+            ))
+            continue
+        if right_path != path:
+            found.append(_unchecked(
+                "Go", path, version, False, manifest,
+                f"replaced by {right_path}",
+                direct=direct,
+            ))
+            continue
+        found.append(Package("Go", path, right_version, direct, False, manifest))
     return found
 
 
-def _cargo_direct(manifests: list[str]) -> tuple[set[str], set[str]]:
+def _cargo_tables(data: dict):
+    yield data.get("dependencies"), False
+    yield data.get("dev-dependencies"), True
+    yield data.get("build-dependencies"), True
+    target = data.get("target")
+    if isinstance(target, dict):
+        for body in target.values():
+            if isinstance(body, dict):
+                yield body.get("dependencies"), False
+
+
+def _cargo_identity(key: str, spec) -> tuple[str, str | None]:
+    if isinstance(spec, dict):
+        real = spec.get("package")
+        if isinstance(real, str) and real.strip():
+            real = real.strip()
+            return real, key if key != real else None
+    return key, None
+
+
+def _cargo_direct(manifests: list[str]) -> tuple[set[str], set[str], dict[str, str], dict[str, str | None]]:
     prod: set[str] = set()
     dev: set[str] = set()
+    aliases: dict[str, set[str]] = {}
+    shown: dict[str, str | None] = {}
     for text in manifests:
         data = tomllib.loads(text)
-        prod.update((data.get("dependencies") or {}).keys())
-        dev.update((data.get("dev-dependencies") or {}).keys())
-        dev.update((data.get("build-dependencies") or {}).keys())
-        for key, value in data.items():
-            if key.startswith("target.") and isinstance(value, dict):
-                prod.update((value.get("dependencies") or {}).keys())
+        for table, is_dev in _cargo_tables(data):
+            if not isinstance(table, dict):
+                continue
+            for key, spec in table.items():
+                real, nick = _cargo_identity(str(key), spec)
+                (dev if is_dev else prod).add(real)
+                if nick:
+                    aliases.setdefault(real, set()).add(nick)
+                if real not in shown:
+                    shown[real] = spec if isinstance(spec, str) else None
     dev -= prod
-    return prod, dev
+    joined = {name: ", ".join(sorted(nicks)) for name, nicks in aliases.items()}
+    return prod, dev, joined, shown
 
 
 def parse_cargo_lock(text: str, cargo_tomls: list[str], manifest: str) -> list[Package]:
     data = tomllib.loads(text)
-    prod, dev = _cargo_direct(cargo_tomls) if cargo_tomls else (set(), set())
+    if cargo_tomls:
+        prod, dev, aliases, _shown = _cargo_direct(cargo_tomls)
+    else:
+        prod, dev, aliases = set(), set(), {}
     found: list[Package] = []
     for pkg in data.get("package") or []:
         name = pkg.get("name")
@@ -387,31 +543,30 @@ def parse_cargo_lock(text: str, cargo_tomls: list[str], manifest: str) -> list[P
             continue
         direct = name in prod or name in dev
         is_dev = name in dev
+        alias = aliases.get(str(name))
         if source.startswith("registry+"):
-            found.append(Package("crates.io", name, str(version), direct, is_dev, manifest))
+            found.append(Package(
+                "crates.io", str(name), str(version), direct, is_dev, manifest, alias=alias,
+            ))
             continue
         if source.startswith("git+"):
             found.append(_unchecked(
-                "crates.io", name, str(version), is_dev, manifest,
+                "crates.io", str(name), str(version), is_dev, manifest,
                 "git dependency, not a crates.io release",
                 direct=direct,
+                alias=alias,
             ))
     return found
 
 
 def parse_cargo_toml(text: str, manifest: str) -> list[Package]:
-    prod, dev = _cargo_direct([text])
+    prod, dev, aliases, shown = _cargo_direct([text])
     found: list[Package] = []
-    data = tomllib.loads(text)
-    specs = {}
-    specs.update(data.get("dependencies") or {})
-    specs.update(data.get("dev-dependencies") or {})
-    for name in prod | dev:
-        spec = specs.get(name)
-        shown = spec if isinstance(spec, str) else None
+    for name in sorted(prod | dev):
         found.append(_unchecked(
-            "crates.io", name, shown, name in dev, manifest,
+            "crates.io", name, shown.get(name), name in dev, manifest,
             "version is a range, no lockfile",
+            alias=aliases.get(name),
         ))
     return found
 
@@ -581,6 +736,12 @@ def dedupe(packages: list[Package]) -> list[Package]:
             previous.manifest = pkg.manifest
         if previous.dev and not pkg.dev:
             previous.dev = False
+        if pkg.alias:
+            if not previous.alias:
+                previous.alias = pkg.alias
+            elif pkg.alias != previous.alias:
+                names = sorted({part for part in previous.alias.split(", ") + pkg.alias.split(", ") if part})
+                previous.alias = ", ".join(names)
     return [merged[key] for key in order]
 
 
