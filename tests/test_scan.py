@@ -2,14 +2,16 @@ import json
 import os
 import stat
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 from supply_scan.acquire import AcquireError, delete_tree, open_workspace, sanitize_git_url
 from supply_scan.inventory import Package, dedupe, scan_tree
-from supply_scan.cache import DiskCache
-from supply_scan.match import Finding, annotate, cvss_v3_score, hydrate, range_contains, version_tuple
-from supply_scan.report import exit_code
+from supply_scan.cache import DiskCache, NullCache
+import supply_scan.match as match
+from supply_scan.match import Finding, annotate, cvss_v3_score, hydrate, query_osv, range_contains, version_tuple
+from supply_scan.report import Snapshot, exit_code, render_text
 
 
 CRITICAL = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
@@ -68,6 +70,27 @@ require (
 require github.com/solo/mod v1.0.0
 """
 
+GO_REPLACE = """
+module example.com/app
+
+go 1.22
+
+require (
+    github.com/local/mod v1.0.0
+    github.com/forked/mod v0.5.0
+    github.com/same/mod v1.0.0
+    github.com/untouched/mod v1.2.3 // indirect
+)
+
+replace (
+    github.com/local/mod => "../local/mod"
+    github.com/forked/mod => github.com/other/mod v1.4.0
+    github.com/same/mod => github.com/same/mod v1.9.0
+)
+
+replace github.com/untouched/mod v0.1.0 => github.com/untouched/mod v9.0.0
+"""
+
 UV = """
 [[package]]
 name = "urllib3"
@@ -102,6 +125,11 @@ version = "1.0.152"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
+name = "libc"
+version = "0.2.155"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "leftpad"
 version = "0.1.0"
 source = "git+https://github.com/example/leftpad#abcdef"
@@ -109,7 +137,15 @@ source = "git+https://github.com/example/leftpad#abcdef"
 
 CARGO_TOML = """
 [dependencies]
-serde = "1"
+serde1 = { package = "serde", version = "1" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+"""
+
+CARGO_RENAME_ONLY = """
+[dependencies]
+serde1 = { package = "serde", version = "1" }
 """
 
 
@@ -178,6 +214,43 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(found["github.com/foo/baz"].direct)
         self.assertTrue(found["github.com/solo/mod"].direct)
 
+    def test_go_replace_uses_the_copy_that_is_built(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "go.mod").write_text(GO_REPLACE, encoding="utf-8")
+            found = {pkg.name: pkg for pkg in scan_tree(Path(tmp))}
+        local = found["github.com/local/mod"]
+        forked = found["github.com/forked/mod"]
+        same = found["github.com/same/mod"]
+        untouched = found["github.com/untouched/mod"]
+        self.assertIn("replaced", local.unchecked_reason)
+        self.assertIn("../local/mod", local.unchecked_reason)
+        self.assertTrue(local.direct)
+        self.assertIn("replaced", forked.unchecked_reason)
+        self.assertIn("github.com/other/mod", forked.unchecked_reason)
+        self.assertIsNone(same.unchecked_reason)
+        self.assertEqual(same.version, "v1.9.0")
+        self.assertTrue(same.direct)
+        self.assertEqual(untouched.version, "v1.2.3")
+        self.assertFalse(untouched.direct)
+        self.assertIsNone(untouched.unchecked_reason)
+
+        seen = []
+
+        def fake_batch(chunk):
+            seen.extend((pkg.name, pkg.version) for pkg in chunk)
+            return [{"vulns": []} for _ in chunk]
+
+        original = match._post_batch
+        match._post_batch = fake_batch
+        try:
+            query_osv(list(found.values()), cache=NullCache())
+        finally:
+            match._post_batch = original
+        self.assertIn(("github.com/same/mod", "v1.9.0"), seen)
+        self.assertIn(("github.com/untouched/mod", "v1.2.3"), seen)
+        self.assertNotIn("github.com/local/mod", [name for name, _version in seen])
+        self.assertNotIn("github.com/forked/mod", [name for name, _version in seen])
+
     def test_requirements_pin_and_range(self):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "requirements.txt").write_text(
@@ -208,9 +281,30 @@ class InventoryTests(unittest.TestCase):
             Path(tmp, "Cargo.toml").write_text(CARGO_TOML, encoding="utf-8")
             found = {pkg.name: pkg for pkg in scan_tree(Path(tmp))}
         self.assertNotIn("app", found)
-        self.assertTrue(found["serde"].direct)
-        self.assertEqual(found["serde"].ecosystem, "crates.io")
+        self.assertNotIn("serde1", found)
+        serde = found["serde"]
+        self.assertTrue(serde.direct)
+        self.assertEqual(serde.ecosystem, "crates.io")
+        self.assertEqual(serde.alias, "serde1")
+        self.assertIsNone(serde.unchecked_reason)
+        self.assertTrue(found["libc"].direct)
+        self.assertIsNone(found["libc"].alias)
         self.assertIn("git dependency", found["leftpad"].unchecked_reason)
+        serde.vulns = [Finding("GHSA-1", None, "high", "example", "1.0.153", "vulnerability", True)]
+        text = render_text(Snapshot(".", None, None, [serde]))
+        self.assertIn("serde  1.0.152", text)
+        self.assertIn("as serde1", text)
+
+    def test_cargo_rename_without_a_lock_uses_the_crate_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "Cargo.toml").write_text(CARGO_RENAME_ONLY, encoding="utf-8")
+            found = {pkg.name: pkg for pkg in scan_tree(Path(tmp))}
+        self.assertNotIn("serde1", found)
+        serde = found["serde"]
+        self.assertEqual(serde.alias, "serde1")
+        self.assertEqual(serde.unchecked_reason, "version is a range, no lockfile")
+        text = render_text(Snapshot(".", None, None, [serde]))
+        self.assertIn("as serde1", text)
 
     def test_broken_lock_does_not_crash(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -268,6 +362,28 @@ class MatchTests(unittest.TestCase):
         annotate([package], hydrated)
         self.assertEqual(package.recommend, "4.17.21")
         self.assertEqual(package.vulns[0].severity, "critical")
+
+    def test_two_stub_ids_are_fetched_together(self):
+        entered = threading.Barrier(2)
+        calls = []
+        lock = threading.Lock()
+
+        def fetch(osv_id):
+            with lock:
+                calls.append(osv_id)
+            entered.wait(timeout=2)
+            return _advisory(osv_id=osv_id)
+
+        hydrated = hydrate(
+            [{"vulns": [{"id": "GHSA-1"}, {"id": "GHSA-2"}, {"id": "GHSA-1"}]}],
+            fetch,
+        )
+        self.assertEqual(sorted(calls), ["GHSA-1", "GHSA-2"])
+        bodies = hydrated[0]["vulns"]
+        self.assertEqual([body["id"] for body in bodies], ["GHSA-1", "GHSA-2", "GHSA-1"])
+        self.assertIn("affected", bodies[0])
+        self.assertIn("affected", bodies[1])
+        self.assertIs(bodies[0], bodies[2])
 
     def test_withdrawn_and_unfixed(self):
         package = Package("npm", "lodash", "1.0.0", True, False, "package-lock.json")

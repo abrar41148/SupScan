@@ -36,10 +36,13 @@ def _scope(package: Package) -> str:
 
 def _package_line(package: Package) -> str:
     version = package.version or "-"
-    return (
+    line = (
         f"{package.name}  {version}  {package.ecosystem}  "
         f"{_relation(package)}  {_scope(package)}  {package.manifest}"
     )
+    if package.alias:
+        line += f"  as {package.alias}"
+    return line
 
 
 def _finding_key(finding: Finding) -> tuple:
@@ -103,6 +106,7 @@ def _package_dict(package: Package) -> dict:
         "manifest": package.manifest,
         "unchecked_reason": package.unchecked_reason,
         "recommend": package.recommend,
+        "alias": package.alias,
         "vulns": [
             {
                 "id": finding.osv_id,

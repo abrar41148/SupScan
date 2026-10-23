@@ -1,7 +1,8 @@
 flowchart TD
     Start([Scan and report already work]) --> Cache["Cache OSV answers for 24 hours"]
     Cache --> Npm["Fix npm dev and prod labels"]
-    Npm --> Pnpm["Read a pnpm lock, or say it was not understood"]
+    Npm --> Hydrate["Fetch full advisories together"]
+    Hydrate --> Pnpm["Read a pnpm lock, or say it was not understood"]
     Pnpm --> GoReplace["Mark a Go replace as unchecked"]
     GoReplace --> Cargo["Look up the real crates.io name"]
     Cargo --> Screen["Ignore list and scan comparison, on a screen"]
@@ -12,7 +13,7 @@ flowchart TD
     classDef later fill:#E6E6FA,stroke:#333,stroke-width:2px,color:darkblue
     classDef parked fill:#FFD700,stroke:#333,stroke-width:2px,color:black
 
-    class Start,Cache done
-    class Npm,Pnpm,GoReplace,Cargo next
+    class Start,Cache,Npm,Hydrate,GoReplace,Cargo done
+    class Pnpm next
     class Screen later
     class Parked parked
