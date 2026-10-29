@@ -6,11 +6,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from supply_scan.acquire import AcquireError, open_workspace
-from supply_scan.cache import DiskCache, NullCache, default_cache_dir
-from supply_scan.inventory import dedupe, scan_tree
-from supply_scan.match import MatchError, query_osv
-from supply_scan.report import Snapshot, exit_code, render_html, render_json, render_text
+from supply_scan.acquire import AcquireError
+from supply_scan.match import MatchError
+from supply_scan.report import exit_code, render_html, render_json, render_text
+from supply_scan.run import collect
 
 
 def _emit(text: str) -> None:
@@ -48,26 +47,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        with open_workspace(args.target, args.branch) as workspace:
-            if workspace.cloned:
-                print(f"cloned {workspace.target}", file=sys.stderr)
-            packages = dedupe(scan_tree(workspace.path))
-            packages.sort(key=lambda package: (package.manifest, package.name, package.version or ""))
-            cache = NullCache() if args.no_cache else DiskCache(default_cache_dir())
-            query_osv(packages, cache=cache)
-            snapshot = Snapshot(
-                target=workspace.target,
-                commit=workspace.commit,
-                branch=workspace.branch,
-                packages=packages,
-            )
-            text = render_text(snapshot)
-            Path(args.json).write_text(render_json(snapshot), encoding="utf-8")
-            if args.html:
-                Path(args.html).write_text(render_html(snapshot), encoding="utf-8")
+        snapshot, packages, cloned = collect(
+            args.target,
+            args.branch,
+            use_cache=not args.no_cache,
+        )
     except (AcquireError, MatchError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    if cloned:
+        print(f"cloned {snapshot.target}", file=sys.stderr)
+    text = render_text(snapshot)
+    Path(args.json).write_text(render_json(snapshot), encoding="utf-8")
+    if args.html:
+        Path(args.html).write_text(render_html(snapshot), encoding="utf-8")
 
     _emit(text)
     print(f"wrote {args.json}", file=sys.stderr)

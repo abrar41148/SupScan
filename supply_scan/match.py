@@ -13,6 +13,7 @@ from decimal import Decimal, ROUND_CEILING
 
 from supply_scan.cache import DiskCache, NullCache, default_cache_dir
 from supply_scan.inventory import Package
+from supply_scan.versions import version_key
 
 OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
 BATCH_SIZE = 1000
@@ -47,37 +48,24 @@ class Finding:
     precise: bool
 
 
-def version_tuple(value: str | None) -> tuple[int, ...] | None:
-    if value is None:
+def version_tuple(value: str | None, ecosystem: str | None = None):
+    """A comparable version, or None when this ecosystem cannot order it."""
+    return version_key(value, ecosystem)
+
+
+def _cmp(left: str, right: str, ecosystem: str | None = None) -> int | None:
+    left_key = version_tuple(left, ecosystem)
+    right_key = version_tuple(right, ecosystem)
+    if left_key is None or right_key is None:
         return None
-    text = str(value).strip()
-    if text == "0":
-        return (0,)
-    if text.startswith("v") and len(text) > 1 and text[1].isdigit():
-        text = text[1:]
-    text = text.split("+", 1)[0]
-    if "-" in text or not text:
-        return None
-    parts: list[int] = []
-    for piece in text.split("."):
-        if not piece.isdigit():
-            return None
-        parts.append(int(piece))
-    return tuple(parts) or None
+    return (left_key > right_key) - (left_key < right_key)
 
 
-def _cmp(left: str, right: str) -> int | None:
-    a = version_tuple(left)
-    b = version_tuple(right)
-    if a is None or b is None:
-        return None
-    width = max(len(a), len(b))
-    a = a + (0,) * (width - len(a))
-    b = b + (0,) * (width - len(b))
-    return (a > b) - (a < b)
-
-
-def _matching_interval(installed: str, events: list[dict]) -> tuple[bool | None, str | None]:
+def _matching_interval(
+    installed: str,
+    events: list[dict],
+    ecosystem: str | None = None,
+) -> tuple[bool | None, str | None]:
     """Walk introduced/fixed pairs. Returns (contained, fixed_version).
 
     contained is None when a bound does not parse. A matching interval with no
@@ -104,7 +92,7 @@ def _matching_interval(installed: str, events: list[dict]) -> tuple[bool | None,
                 limit_kind = "last_affected"
                 limit_value = str(nxt["last_affected"])
                 index += 1
-        intro_order = _cmp(introduced, installed)
+        intro_order = _cmp(introduced, installed, ecosystem)
         if intro_order is None:
             return None, None
         if intro_order > 0:
@@ -112,7 +100,7 @@ def _matching_interval(installed: str, events: list[dict]) -> tuple[bool | None,
         if limit_kind is None:
             contained = True
             continue
-        limit_order = _cmp(installed, limit_value or "")
+        limit_order = _cmp(installed, limit_value or "", ecosystem)
         if limit_order is None:
             return None, None
         if limit_kind == "fixed" and limit_order < 0:
@@ -122,13 +110,13 @@ def _matching_interval(installed: str, events: list[dict]) -> tuple[bool | None,
     return contained, None
 
 
-def range_contains(installed: str, events: list[dict]) -> bool | None:
-    contained, _fixed = _matching_interval(installed, events)
+def range_contains(installed: str, events: list[dict], ecosystem: str | None = None) -> bool | None:
+    contained, _fixed = _matching_interval(installed, events, ecosystem)
     return contained
 
 
-def _segment_fix(installed: str, events: list[dict]) -> str | None:
-    _contained, fixed = _matching_interval(installed, events)
+def _segment_fix(installed: str, events: list[dict], ecosystem: str | None = None) -> str | None:
+    _contained, fixed = _matching_interval(installed, events, ecosystem)
     return fixed
 
 
@@ -237,12 +225,12 @@ def _finding(vuln: dict, package: Package) -> Finding | None:
     if not events_list:
         imprecise = True
     for events in events_list:
-        contained = range_contains(package.version or "", events)
+        contained = range_contains(package.version or "", events, package.ecosystem)
         if contained is None:
             imprecise = True
             continue
         if contained:
-            precise_fixes.append(_segment_fix(package.version or "", events))
+            precise_fixes.append(_segment_fix(package.version or "", events, package.ecosystem))
     if imprecise:
         collected = []
         for events in events_list:
@@ -254,8 +242,8 @@ def _finding(vuln: dict, package: Package) -> Finding | None:
         if not concrete:
             fixed_in = None
             precise = True
-        elif all(version_tuple(fix) for fix in concrete):
-            fixed_in = max(concrete, key=lambda item: version_tuple(item) or ())
+        elif all(version_tuple(fix, package.ecosystem) for fix in concrete):
+            fixed_in = max(concrete, key=lambda item: version_tuple(item, package.ecosystem) or ())
             precise = True
         else:
             fixed_in = ", ".join(dict.fromkeys(concrete))
@@ -271,13 +259,13 @@ def _finding(vuln: dict, package: Package) -> Finding | None:
     )
 
 
-def _recommend(findings: list[Finding]) -> str | None:
+def _recommend(findings: list[Finding], ecosystem: str | None) -> str | None:
     if any(not finding.precise for finding in findings):
         return None
     fixes = [finding.fixed_in for finding in findings if finding.fixed_in]
-    if not fixes or any(version_tuple(fix) is None for fix in fixes):
+    if not fixes or any(version_tuple(fix, ecosystem) is None for fix in fixes):
         return None
-    return max(fixes, key=lambda item: version_tuple(item) or ())
+    return max(fixes, key=lambda item: version_tuple(item, ecosystem) or ())
 
 
 def annotate(packages: list[Package], results: list[dict]) -> None:
@@ -293,7 +281,7 @@ def annotate(packages: list[Package], results: list[dict]) -> None:
             if finding is not None:
                 findings.append(finding)
         package.vulns = findings
-        package.recommend = _recommend(findings)
+        package.recommend = _recommend(findings, package.ecosystem)
 
 
 def _fetch_vuln(osv_id: str) -> dict:

@@ -1,0 +1,1897 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>supply-scan</title>
+  <style>
+    :root {
+      --field: #e4ecee;
+      --sheet: #f6fafb;
+      --ink: #17242c;
+      --mute: #5a6c76;
+      --rule: #c5d2d7;
+      --line: #7d919a;
+      --fix: #0c6b62;
+      --fix-ink: #f6fafb;
+      --sans: "Segoe UI", "IBM Plex Sans", sans-serif;
+      --mono: "Cascadia Mono", "IBM Plex Mono", ui-monospace, monospace;
+      color-scheme: light;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { background: var(--field); }
+
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      background: var(--field);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 1rem;
+      line-height: 1.45;
+    }
+
+    button:focus,
+    input:focus,
+    select:focus,
+    summary:focus {
+      outline: 2px solid var(--fix);
+      outline-offset: 2px;
+    }
+
+    .scan:focus {
+      outline-color: var(--ink);
+    }
+
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      height: 4rem;
+      padding: 0 1.5rem;
+      border-bottom: 1px solid var(--rule);
+      background: var(--sheet);
+    }
+
+    .name {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+      color: inherit;
+    }
+
+    input,
+    select {
+      accent-color: var(--fix);
+    }
+
+    .scan {
+      border: 0;
+      background: var(--fix);
+      color: var(--fix-ink);
+      padding: 0.55rem 1.15rem;
+      cursor: pointer;
+    }
+
+    .scan:active { transform: translateY(1px); }
+
+    .scan:disabled {
+      cursor: default;
+      opacity: 0.55;
+    }
+
+    .open-wrap { position: relative; width: fit-content; }
+
+    .open {
+      display: inline-block;
+      border: 1px solid var(--line);
+      background: var(--sheet);
+      padding: 0.45rem 0.7rem;
+      cursor: pointer;
+    }
+
+    button.open {
+      font: inherit;
+      color: inherit;
+    }
+
+    button.open:disabled {
+      cursor: default;
+      opacity: 0.55;
+    }
+
+    .report-actions,
+    .target-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .target-row input { flex: 1; min-width: 12rem; }
+
+    .file {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+    }
+
+    .file:focus { outline: none; }
+
+    .open-wrap:focus-within .open {
+      outline: 2px solid var(--fix);
+      outline-offset: 2px;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 17rem minmax(0, 1fr);
+      gap: 2.5rem;
+      max-width: 72rem;
+      margin: 0 auto;
+      padding: 1.75rem 1.5rem 3rem;
+    }
+
+    .rail h2,
+    .panel h2 {
+      margin: 0 0 0.35rem;
+      font-size: 1.35rem;
+      font-weight: 650;
+      letter-spacing: 0;
+      line-height: 1.2;
+    }
+
+    .help,
+    .quiet {
+      margin: 0;
+      color: var(--mute);
+      font-size: 0.92rem;
+    }
+
+    form { display: grid; gap: 1rem; }
+
+    .field { display: grid; gap: 0.35rem; }
+
+    label { font-size: 0.95rem; }
+
+    input[type="text"],
+    select {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--sheet);
+      padding: 0.45rem 0.55rem;
+      border-radius: 0;
+    }
+
+    .check {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      font-size: 0.95rem;
+    }
+
+    .check input { margin-top: 0.2rem; }
+
+    .block { margin-top: 1.75rem; }
+
+    .counts {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.35rem 1rem;
+      margin: 0.75rem 0 0;
+    }
+
+    .counts dt { margin: 0; }
+
+    .counts dd {
+      margin: 0;
+      font-family: var(--mono);
+      text-align: right;
+    }
+
+    .compare { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
+
+    .compare-go { margin-top: 0.75rem; }
+
+    .panel[hidden] { display: none; }
+
+    .panel p { max-width: 42rem; }
+
+    .bones {
+      display: grid;
+      gap: 0.85rem;
+      margin-top: 1.5rem;
+    }
+
+    .bone {
+      height: 2.6rem;
+      background: var(--sheet);
+      border: 1px solid var(--rule);
+    }
+
+    #commit {
+      font-family: var(--mono);
+      font-size: 0.85rem;
+    }
+
+    .packages {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .package {
+      border-top: 1px solid var(--rule);
+    }
+
+    .packages > .package:first-child { border-top: 0; }
+
+    .package.flat { padding: 1.15rem 0; }
+
+    .packages > .package.flat:first-child { padding-top: 0; }
+
+    .fold > summary {
+      display: grid;
+      grid-template-columns: 1rem minmax(0, 1fr);
+      grid-template-areas:
+        "mark name"
+        "mark tally";
+      gap: 0.1rem 0.6rem;
+      align-items: baseline;
+      padding: 0.85rem 0;
+      cursor: pointer;
+      list-style: none;
+    }
+
+    .fold > summary::-webkit-details-marker { display: none; }
+
+    .fold > summary::before {
+      content: "▸";
+      grid-area: mark;
+      color: var(--mute);
+      font-family: var(--mono);
+    }
+
+    .fold[open] > summary::before { content: "▾"; }
+
+    .summary-name { grid-area: name; }
+
+    .summary-tally {
+      grid-area: tally;
+      color: var(--mute);
+      font-size: 0.92rem;
+    }
+
+    .eco {
+      margin-left: 0.65rem;
+      color: var(--mute);
+      font-family: var(--sans);
+      font-size: 0.92rem;
+      font-weight: 400;
+    }
+
+    .versions {
+      margin: 0 0 0.35rem 1.6rem;
+      padding: 0;
+      list-style: none;
+    }
+
+    .version { border-top: 1px solid var(--rule); }
+
+    .versions > .version:first-child { border-top: 0; }
+
+    .version-body { padding: 0 0 0.85rem 1.6rem; }
+
+    @media (min-width: 768px) {
+      .fold > summary {
+        grid-template-columns: 1rem minmax(0, 1fr) auto;
+        grid-template-areas: "mark name tally";
+        gap: 0.75rem;
+      }
+    }
+
+    .pkg-name {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 1.05rem;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
+    .meta {
+      margin: 0.25rem 0 0;
+      color: var(--mute);
+      font-size: 0.92rem;
+    }
+
+    .manifest {
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      overflow-wrap: anywhere;
+    }
+
+    .finding { margin-top: 0.9rem; }
+
+    .finding p,
+    .upgrade { margin: 0.15rem 0 0; }
+
+    .summary { max-width: 65ch; }
+
+    .id {
+      font-family: var(--mono);
+      font-size: 0.92rem;
+    }
+
+    .fix-ver {
+      font-family: var(--mono);
+      color: var(--fix);
+      font-size: 1.35rem;
+      font-weight: 650;
+    }
+
+    .upgrade .fix-ver { font-size: 1.05rem; }
+
+    .ignore {
+      margin-top: 0.65rem;
+      border: 1px solid var(--line);
+      background: var(--sheet);
+      padding: 0.3rem 0.65rem;
+      cursor: pointer;
+    }
+
+    .ignore:active { transform: translateY(1px); }
+
+    .ignore:disabled { cursor: default; }
+
+    .is-ignored { color: var(--mute); }
+
+    .is-ignored .fix-ver {
+      color: var(--mute);
+      font-size: 1.05rem;
+    }
+
+    .ignored-word {
+      margin: 0 0 0.2rem;
+      color: var(--ink);
+      font-size: 0.92rem;
+    }
+
+    body.open-only .is-ignored { display: none; }
+
+    body.open-only .version:has(.finding):not(:has(.finding:not(.is-ignored))),
+    body.open-only .package:has(.finding):not(:has(.finding:not(.is-ignored))) {
+      display: none;
+    }
+
+    .panel h2.group-title { margin: 2rem 0 0.85rem; }
+
+    .panel h2.group-title:first-child { margin-top: 0; }
+
+    .relation { margin: 0; font-weight: 500; }
+
+    table.types {
+      width: 100%;
+      margin: 0.9rem 0 0;
+      border-collapse: collapse;
+    }
+
+    table.types th,
+    table.types td {
+      padding: 0.45rem 0;
+      border-top: 1px solid var(--rule);
+      text-align: left;
+      font-weight: 400;
+      vertical-align: baseline;
+    }
+
+    table.types th { color: var(--mute); }
+
+    table.types .count {
+      text-align: right;
+      font-family: var(--mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .compare-board {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      column-gap: 10px;
+      margin-top: 1.25rem;
+    }
+
+    .compare-board > .heads { display: contents; }
+
+    .compare-board > .pair {
+      display: grid;
+      grid-column: 1 / -1;
+      grid-template-columns: subgrid;
+      grid-template-rows: auto auto auto;
+    }
+
+    .compare-board .cell > .fold {
+      display: grid;
+      grid-template-rows: subgrid;
+      grid-row: 1 / -1;
+    }
+
+    .compare-board .fold > summary {
+      grid-template-columns: 1rem minmax(0, 1fr);
+      grid-template-areas:
+        "mark name"
+        "mark tally";
+    }
+
+    .compare-board .cell > .fold > summary {
+      display: grid;
+      grid-template-rows: subgrid;
+      grid-row: 1 / span 2;
+    }
+
+    .compare-board .cell > .fold > summary .summary-name,
+    .compare-board .cell > .fold > summary .summary-tally {
+      grid-area: auto;
+    }
+
+    .compare-board .cell > .fold > summary .summary-name { grid-row: 1; grid-column: 2; }
+
+    .compare-board .cell > .fold > summary .summary-tally { grid-row: 2; grid-column: 2; }
+
+    .compare-board .cell > .fold > summary::before { grid-row: 1 / span 2; grid-column: 1; }
+
+    .compare-board .cell > .fold > .version-body { grid-row: 3; }
+
+    .compare-board .cell > .fold:not([open]) > .version-body { display: none; }
+
+    .compare-board .summary-name {
+      display: block;
+      min-width: 0;
+    }
+
+    .compare-board .pkg-name { overflow-wrap: normal; }
+
+    .compare-board .heads p {
+      margin: 0 0 0.45rem;
+      font-weight: 500;
+    }
+
+    .compare-board .cell {
+      display: grid;
+      grid-template-rows: subgrid;
+      grid-row: 1 / -1;
+      background: var(--sheet);
+      min-width: 0;
+      border-right: 1px solid var(--rule);
+      border-bottom: 1px solid var(--rule);
+      border-left: 1px solid var(--rule);
+    }
+
+    .compare-board > .pair:first-of-type .cell { border-top: 1px solid var(--rule); }
+
+    .compare-board .cell.blank { min-height: 3rem; }
+
+    .compare-board .none {
+      margin: 0;
+      padding: 0.85rem 0.75rem;
+      color: var(--mute);
+    }
+
+    .compare-board > .missing { display: contents; }
+
+    .compare-board .missing p {
+      margin: 0.85rem 0 0;
+      color: var(--mute);
+      font-size: 0.92rem;
+    }
+
+    .compare-board .side-label { display: none; }
+
+    .compare-board .fold > summary { padding: 0.85rem 0.75rem; }
+
+    .compare-board .version-body { padding: 0 0.85rem 0.85rem 1.6rem; }
+
+    .compare-board .move { margin: 0 0 0.35rem; color: var(--mute); }
+
+    .compare-board .move span {
+      font-family: var(--mono);
+      color: var(--ink);
+    }
+
+    .compare-board .cleared { color: var(--fix); }
+
+    .sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 560px) {
+      .compare-board { display: block; }
+      .compare-board > .heads { display: none; }
+      .compare-board > .missing {
+        display: grid;
+        gap: 0.35rem;
+        margin-top: 0.85rem;
+      }
+      .compare-board > .pair {
+        display: grid;
+        grid-template-columns: 1fr;
+        grid-template-rows: none;
+        margin-top: 0.85rem;
+      }
+      .compare-board .cell,
+      .compare-board .cell > .fold,
+      .compare-board .cell > .fold > summary,
+      .compare-board .cell > .fold > .version-body {
+        display: block;
+        grid-row: auto;
+        grid-column: auto;
+      }
+      .compare-board .side-label {
+        display: block;
+        margin: 0;
+        padding: 0.55rem 0.75rem 0;
+        font-weight: 500;
+      }
+      .compare-board > .pair:first-of-type .cell { border-top: 0; }
+      .compare-board .cell { border-top: 1px solid var(--rule); }
+    }
+
+    @media (max-width: 767px) {
+      .top { padding: 0 1rem; }
+      .workspace {
+        grid-template-columns: 1fr;
+        gap: 2rem;
+        padding: 1.25rem 1rem 2.5rem;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .scan:active,
+      .ignore:active { transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <p class="name">supply-scan</p>
+    <button class="scan" type="button" id="scan">Scan</button>
+  </header>
+
+  <main class="workspace">
+    <section class="rail" aria-label="Scan setup">
+      <form id="setup">
+        <div class="field">
+          <span id="report-label">Report</span>
+          <div class="report-actions">
+            <div class="open-wrap">
+              <span class="open">Open report</span>
+              <input id="report" class="file" type="file" accept=".json,application/json" aria-labelledby="report-label">
+            </div>
+            <button class="open" type="button" id="save" disabled>Save report</button>
+          </div>
+          <p class="help" id="report-help">Open a scan or a saved comparison. Save suggests repo, branch, and time.</p>
+        </div>
+        <div class="field">
+          <label for="target">Target</label>
+          <div class="target-row">
+            <input id="target" name="target" type="text" autocomplete="off">
+            <button class="open" type="button" id="browse">Browse</button>
+            <input id="folder" type="file" webkitdirectory multiple hidden>
+          </div>
+          <p class="help" id="target-help">Git URL or local directory. Browse uses the browser's folder window.</p>
+        </div>
+        <div class="field">
+          <label for="branch">Branch</label>
+          <select id="branch" name="branch" disabled>
+            <option value="">Enter target first</option>
+          </select>
+          <p class="help" id="branch-help">Branches load from the remote after a git URL.</p>
+        </div>
+        <label class="check">
+          <input id="strict" name="strict" type="checkbox">
+          <span>Count dev dependencies and medium severity.</span>
+        </label>
+        <label class="check">
+          <input id="open-only" type="checkbox">
+          <span>Open findings only.</span>
+        </label>
+      </form>
+
+      <div class="block">
+        <h2>Counts</h2>
+        <dl class="counts">
+          <dt>Packages</dt><dd id="count-packages">-</dd>
+          <dt>Vulnerable</dt><dd id="count-vulnerable">-</dd>
+          <dt>Unchecked</dt><dd id="count-unchecked">-</dd>
+          <dt id="commit-label" hidden>Commit</dt>
+          <dd id="commit" hidden></dd>
+          <dt id="result-label" hidden>Result</dt>
+          <dd id="result" hidden></dd>
+        </dl>
+      </div>
+
+      <div class="block">
+        <h2>Scan history</h2>
+        <div class="compare">
+          <div class="field">
+            <label for="history">Saved scan</label>
+            <select id="history" disabled>
+              <option>No saved scans</option>
+            </select>
+          </div>
+        </div>
+        <button class="scan compare-go" type="button" id="open-history">Open</button>
+        <p class="help">Saved scans stay here. Open one to see that report again.</p>
+      </div>
+
+      <div class="block">
+        <h2>Compare</h2>
+        <div class="compare">
+          <div class="field">
+            <label for="current">This scan</label>
+            <select id="current" disabled>
+              <option>No saved scans</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="previous">Previous scan</label>
+            <select id="previous" disabled>
+              <option>No saved scans</option>
+            </select>
+          </div>
+        </div>
+        <button class="scan compare-go" type="button" id="compare">Compare</button>
+        <p class="help">A package is the ecosystem and name, so a new version stays on that package.</p>
+      </div>
+
+    </section>
+
+    <section aria-live="polite">
+      <div class="panel" id="state-ready">
+        <h2>No scan yet</h2>
+        <p>Open a supply-scan report, or enter a target and scan.</p>
+      </div>
+      <div class="panel" id="state-report" hidden></div>
+      <div class="panel" id="state-scanning" hidden>
+        <h2>Scanning</h2>
+        <p>Reading the tree and asking OSV.</p>
+        <div class="bones" aria-hidden="true">
+          <div class="bone"></div>
+          <div class="bone"></div>
+          <div class="bone"></div>
+        </div>
+      </div>
+      <div class="panel" id="state-empty" hidden>
+        <h2>Clear</h2>
+        <p>No known vulnerabilities in resolved packages.</p>
+      </div>
+      <div class="panel" id="state-error" hidden>
+        <h2 id="error-title">Could not open that path</h2>
+        <p id="error-body">Pass a git URL or a directory that exists.</p>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const SEVERITY = { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 };
+    const counts = {
+      packages: document.getElementById("count-packages"),
+      vulnerable: document.getElementById("count-vulnerable"),
+      unchecked: document.getElementById("count-unchecked"),
+    };
+    const panels = {
+      ready: document.getElementById("state-ready"),
+      scanning: document.getElementById("state-scanning"),
+      empty: document.getElementById("state-empty"),
+      error: document.getElementById("state-error"),
+      report: document.getElementById("state-report"),
+    };
+    const ignores = new Set();
+    let lastReport = null;
+    let lastName = "";
+    let lastComparison = null;
+    let viewKind = "";
+    const scanIndex = new Map();
+    let fillingScans = false;
+    const reportHelp = document.getElementById("report-help");
+    const commitLabel = document.getElementById("commit-label");
+    const commitLine = document.getElementById("commit");
+    const defaultHelp = reportHelp.textContent;
+
+    function setCommit(value) {
+      const shown = Boolean(value);
+      commitLabel.hidden = !shown;
+      commitLine.hidden = !shown;
+      commitLine.textContent = shown ? String(value).slice(0, 12) : "";
+      if (shown) commitLine.title = value;
+      else commitLine.removeAttribute("title");
+    }
+
+    function setResult(code) {
+      const shown = code === 0 || code === 1;
+      document.getElementById("result-label").hidden = !shown;
+      const node = document.getElementById("result");
+      node.hidden = !shown;
+      node.textContent = code === 1 ? "Fail" : code === 0 ? "Pass" : "";
+    }
+
+    function line(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      node.textContent = text;
+      return node;
+    }
+
+    function show(state, tally) {
+      for (const [name, panel] of Object.entries(panels)) {
+        panel.hidden = name !== state;
+      }
+      if (tally === "keep") return;
+      const value = tally || (state === "empty"
+        ? { packages: 0, vulnerable: 0, unchecked: 0 }
+        : null);
+      counts.packages.textContent = value ? String(value.packages) : "-";
+      counts.vulnerable.textContent = value ? String(value.vulnerable) : "-";
+      counts.unchecked.textContent = value ? String(value.unchecked) : "-";
+      if (!tally) {
+        setCommit("");
+        setResult(null);
+      }
+    }
+
+    function showError(title, body) {
+      document.getElementById("error-title").textContent = title;
+      document.getElementById("error-body").textContent = body;
+      show("error");
+    }
+
+    function compareFinding(left, right) {
+      const leftKind = left.kind === "malware" ? 0 : 1;
+      const rightKind = right.kind === "malware" ? 0 : 1;
+      if (leftKind !== rightKind) return leftKind - rightKind;
+      const leftRank = SEVERITY[left.severity] ?? 9;
+      const rightRank = SEVERITY[right.severity] ?? 9;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return String(left.id || "").localeCompare(String(right.id || ""));
+    }
+
+    function comparePackage(left, right) {
+      const dev = Number(Boolean(left.dev)) - Number(Boolean(right.dev));
+      if (dev) return dev;
+      const name = String(left.name).localeCompare(String(right.name));
+      if (name) return name;
+      return String(left.version || "").localeCompare(String(right.version || ""));
+    }
+
+    function severityLabel(finding) {
+      if (finding && finding.kind === "malware") return "malware";
+      return (finding && finding.severity) || "unknown";
+    }
+
+    function severityRank(label) {
+      if (label === "malware") return -1;
+      return SEVERITY[label] ?? 9;
+    }
+
+    function worstLabel(findings) {
+      let label = "unknown";
+      let rank = 99;
+      for (const finding of findings) {
+        const next = severityLabel(finding);
+        const nextRank = severityRank(next);
+        if (nextRank < rank) {
+          rank = nextRank;
+          label = next;
+        }
+      }
+      return label;
+    }
+
+    function findingPhrase(count) {
+      return count === 1 ? "1 finding" : `${count} findings`;
+    }
+
+    function versionTally(pkg) {
+      const findings = pkg.vulns || [];
+      if (Object.hasOwn(pkg, "previous_recommend")) {
+        const move = `was ${pkg.previous_recommend || "none"}, now ${pkg.recommend || "none"}`;
+        return findings.length ? `${move}, ${findingPhrase(findings.length)}` : move;
+      }
+      return `${findingPhrase(findings.length)}, ${worstLabel(findings)}`;
+    }
+
+    function groupTally(versions) {
+      const findings = versions.flatMap((pkg) => pkg.vulns || []);
+      const moves = versions.filter((pkg) => Object.hasOwn(pkg, "previous_recommend"));
+      if (moves.length && moves.length === versions.length) {
+        if (moves.length === 1) return versionTally(moves[0]);
+        return `${versions.length} versions, recommend changed`;
+      }
+      const versionWord = versions.length === 1 ? "1 version" : `${versions.length} versions`;
+      return `${versionWord}, ${findingPhrase(findings.length)}, ${worstLabel(findings)}`;
+    }
+
+    function groupByName(packages) {
+      const map = new Map();
+      for (const pkg of packages) {
+        const key = `${pkg.ecosystem || ""}\n${pkg.name || ""}`;
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(pkg);
+      }
+      const groups = [...map.values()];
+      for (const versions of groups) {
+        versions.sort((left, right) => {
+          const rank = severityRank(worstLabel(left.vulns || [])) - severityRank(worstLabel(right.vulns || []));
+          if (rank) return rank;
+          return String(left.version || "").localeCompare(String(right.version || ""));
+        });
+      }
+      groups.sort((left, right) => {
+        const leftFindings = left.flatMap((pkg) => pkg.vulns || []);
+        const rightFindings = right.flatMap((pkg) => pkg.vulns || []);
+        const rank = severityRank(worstLabel(leftFindings)) - severityRank(worstLabel(rightFindings));
+        if (rank) return rank;
+        const eco = String(left[0].ecosystem || "").localeCompare(String(right[0].ecosystem || ""));
+        if (eco) return eco;
+        return String(left[0].name || "").localeCompare(String(right[0].name || ""));
+      });
+      return groups;
+    }
+
+    function summaryName(primary, secondary) {
+      const wrap = document.createElement("span");
+      wrap.className = "summary-name";
+      wrap.append(line("span", "pkg-name", primary));
+      if (secondary) wrap.append(line("span", "eco", secondary));
+      return wrap;
+    }
+
+    function addFindings(parent, pkg) {
+      const findings = [...(pkg.vulns || [])].sort(compareFinding);
+      for (const finding of findings) {
+        const block = document.createElement("div");
+        block.className = "finding";
+        const bits = [finding.id || "-"];
+        if (finding.cve) bits.push(finding.cve);
+        if (finding.kind === "malware") bits.push("malware");
+        bits.push(finding.severity || "unknown");
+        const head = line("p", "", "");
+        bits.forEach((bit, index) => {
+          if (index) head.append(document.createTextNode("  "));
+          const idLike = index === 0 || bit === finding.cve;
+          head.append(idLike ? line("span", "id", bit) : document.createTextNode(bit));
+        });
+        block.append(head);
+        if (finding.summary) block.append(line("p", "summary", finding.summary));
+        if (finding.fixed_in) {
+          const fixed = line("p", "fixed", "fixed in ");
+          fixed.append(line("span", "fix-ver", finding.fixed_in));
+          block.append(fixed);
+        }
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "ignore";
+        button.addEventListener("click", () => toggleIgnore(pkg, finding, block, button));
+        block.append(button);
+        applyIgnored(block, button, ignores.has(ignoreKey(pkg, finding)));
+        parent.append(block);
+      }
+      if (Object.hasOwn(pkg, "previous_recommend")) {
+        const was = line("p", "meta", "Was ");
+        was.append(line("span", "id", pkg.previous_recommend || "none"));
+        parent.append(was);
+        if (pkg.recommend) {
+          const upgrade = line("p", "upgrade", "Upgrade to ");
+          upgrade.append(line("span", "fix-ver", pkg.recommend));
+          parent.append(upgrade);
+        } else {
+          parent.append(line("p", "meta", "No upgrade line."));
+        }
+        return;
+      }
+      const fixes = new Set(findings.map((finding) => finding.fixed_in).filter(Boolean));
+      if (pkg.recommend && (fixes.size !== 1 || !fixes.has(pkg.recommend))) {
+        const upgrade = line("p", "upgrade", "Upgrade to ");
+        upgrade.append(line("span", "fix-ver", pkg.recommend));
+        parent.append(upgrade);
+      }
+    }
+
+    function addGroup(list, versions) {
+      const first = versions[0];
+      const item = document.createElement("li");
+      item.className = "package";
+      const fold = document.createElement("details");
+      fold.className = "fold";
+      const summary = document.createElement("summary");
+      summary.append(
+        summaryName(first.name || "-", first.ecosystem || ""),
+        line("span", "summary-tally", groupTally(versions)),
+      );
+      fold.append(summary);
+      const nested = document.createElement("ul");
+      nested.className = "versions";
+      for (const pkg of versions) {
+        const version = document.createElement("li");
+        version.className = "version";
+        const inner = document.createElement("details");
+        inner.className = "fold";
+        const versionSummary = document.createElement("summary");
+        const relation = pkg.direct ? "direct" : "transitive";
+        const scope = pkg.dev ? "dev" : "prod";
+        const relationBits = [relation, scope];
+        if (pkg.alias) relationBits.push(`as ${pkg.alias}`);
+        if (pkg.previous_version && pkg.previous_version !== pkg.version) {
+          relationBits.push(`was ${pkg.previous_version}`);
+        }
+        versionSummary.append(
+          summaryName(pkg.version || "-", relationBits.join(", ")),
+          line("span", "summary-tally", versionTally(pkg)),
+        );
+        inner.append(versionSummary);
+        const body = document.createElement("div");
+        body.className = "version-body";
+        if (pkg.manifest) body.append(line("p", "meta manifest", pkg.manifest));
+        addFindings(body, pkg);
+        inner.append(body);
+        version.append(inner);
+        nested.append(version);
+      }
+      fold.append(nested);
+      item.append(fold);
+      list.append(item);
+    }
+
+    function addGrouped(list, packages) {
+      for (const versions of groupByName(packages)) addGroup(list, versions);
+    }
+
+    function addPackage(list, pkg) {
+      const item = document.createElement("li");
+      item.className = "package flat";
+      const title = document.createElement("h3");
+      title.className = "pkg-name";
+      title.append(
+        document.createTextNode(pkg.name),
+        document.createTextNode("  "),
+        document.createTextNode(pkg.version || "-"),
+      );
+      item.append(title);
+      const relation = pkg.direct ? "direct" : "transitive";
+      const scope = pkg.dev ? "dev" : "prod";
+      item.append(line("p", "meta", `${pkg.ecosystem}, ${relation}, ${scope}`));
+      if (pkg.alias) item.append(line("p", "meta", `as ${pkg.alias}`));
+      if (pkg.manifest) item.append(line("p", "meta manifest", pkg.manifest));
+      item.append(line("p", "summary", pkg.unchecked_reason || ""));
+      list.append(item);
+    }
+
+    function ignoreKey(pkg, finding) {
+      return [pkg.ecosystem || "", pkg.name || "", pkg.version || "", finding.id || ""].join("\n");
+    }
+
+    function rememberIgnores(entries) {
+      ignores.clear();
+      for (const entry of entries || []) {
+        ignores.add([entry.ecosystem || "", entry.name || "", entry.version || "", entry.id || ""].join("\n"));
+      }
+    }
+
+    function applyIgnored(block, button, ignored) {
+      block.classList.toggle("is-ignored", ignored);
+      const mark = block.querySelector(".ignored-word");
+      if (ignored) {
+        if (!mark) block.prepend(line("p", "ignored-word", "Ignored"));
+        button.textContent = "Restore";
+      } else {
+        if (mark) mark.remove();
+        button.textContent = "Ignore";
+      }
+    }
+
+    async function toggleIgnore(pkg, finding, block, button) {
+      const ignored = !block.classList.contains("is-ignored");
+      button.disabled = true;
+      try {
+        const response = await fetch("/ignores", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ecosystem: pkg.ecosystem || "",
+            name: pkg.name || "",
+            version: pkg.version || "",
+            id: finding.id || "",
+            ignored,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) return;
+        rememberIgnores(payload.ignores);
+        applyIgnored(block, button, ignored);
+      } catch (err) {
+        return;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function loadIgnores() {
+      try {
+        const response = await fetch("/ignores");
+        if (!response.ok) return;
+        rememberIgnores((await response.json()).ignores);
+      } catch (err) {
+        return;
+      }
+    }
+
+    function scanLabel(entry) {
+      const when = String(entry.saved_at || "").replace("T", " ").slice(0, 16);
+      const parts = String(entry.target || "").split(/[/\\]/).filter(Boolean);
+      const name = parts.length ? parts[parts.length - 1] : "scan";
+      const branch = entry.branch ? String(entry.branch) : "no branch";
+      return `${when}  ${name}  ${branch}`;
+    }
+
+    function fillScanLists(entries, currentId) {
+      scanIndex.clear();
+      for (const entry of entries) scanIndex.set(entry.id, entry);
+      fillingScans = true;
+      const current = document.getElementById("current");
+      const previous = document.getElementById("previous");
+      const history = document.getElementById("history");
+      const keepPrevious = previous.value;
+      const keepHistory = history.value;
+      for (const select of [current, previous, history]) {
+        select.replaceChildren();
+        if (!entries.length) {
+          select.disabled = true;
+          select.append(line("option", "", "No saved scans"));
+          continue;
+        }
+        select.disabled = false;
+        const blank = line("option", "", "Choose a scan");
+        blank.value = "";
+        select.append(blank);
+        for (const entry of entries) {
+          const option = line("option", "", scanLabel(entry));
+          option.value = entry.id;
+          option.title = entry.target || "";
+          select.append(option);
+        }
+      }
+      if (currentId && [...current.options].some((option) => option.value === currentId)) {
+        current.value = currentId;
+      }
+      if (keepPrevious && [...previous.options].some((option) => option.value === keepPrevious)) {
+        previous.value = keepPrevious;
+      }
+      if (currentId && [...history.options].some((option) => option.value === currentId)) {
+        history.value = currentId;
+      } else if (keepHistory && [...history.options].some((option) => option.value === keepHistory)) {
+        history.value = keepHistory;
+      }
+      fillingScans = false;
+    }
+
+    async function loadScans(currentId) {
+      try {
+        const response = await fetch("/scans");
+        if (!response.ok) return;
+        fillScanLists((await response.json()).scans || [], currentId);
+      } catch (err) {
+        return;
+      }
+    }
+
+    const CHANGE_LABEL = [
+      ["version_changed", "Version changed"],
+      ["added", "Added"],
+      ["removed", "Removed"],
+      ["advisory_changed", "Advisory changed"],
+      ["unchanged", "Unchanged finding"],
+    ];
+
+    function selectedTarget(id) {
+      const select = document.getElementById(id);
+      const option = [...select.options].find((item) => item.value === select.value);
+      return option ? option.title || "" : "";
+    }
+
+    function compareTally(versions, note) {
+      const findings = versions.flatMap((pkg) => pkg.vulns || []);
+      const tally = findings.length ? groupTally(versions) : "No known vulnerabilities";
+      if (!note) return tally;
+      const lower = note.charAt(0).toLowerCase() + note.slice(1);
+      return `${tally}, ${lower}`;
+    }
+
+    function versionBits(pkg) {
+      const bits = [pkg.direct ? "direct" : "transitive", pkg.dev ? "dev" : "prod"];
+      if (pkg.alias) bits.push(`as ${pkg.alias}`);
+      return bits.join(", ");
+    }
+
+    function addVersionFolds(parent, versions) {
+      const nested = document.createElement("ul");
+      nested.className = "versions";
+      for (const pkg of versions) {
+        const version = document.createElement("li");
+        version.className = "version";
+        const inner = document.createElement("details");
+        inner.className = "fold";
+        const versionSummary = document.createElement("summary");
+        versionSummary.append(
+          summaryName(pkg.version || "-", versionBits(pkg)),
+          line("span", "summary-tally", versionTally(pkg)),
+        );
+        inner.append(versionSummary);
+        const body = document.createElement("div");
+        body.className = "version-body";
+        if (pkg.manifest) body.append(line("p", "meta manifest", pkg.manifest));
+        if (pkg.vulns && pkg.vulns.length) addFindings(body, pkg);
+        else body.append(line("p", "meta", "No known vulnerabilities."));
+        inner.append(body);
+        version.append(inner);
+        nested.append(version);
+      }
+      parent.append(nested);
+    }
+
+    function moveLine(previous, current) {
+      const label = (versions) => versions.map((pkg) => pkg.version || "no version").join(", ") || "no version";
+      const lineNode = line("p", "move", "");
+      lineNode.append(line("span", "", label(previous)));
+      lineNode.append(document.createTextNode(" → "));
+      lineNode.append(line("span", "", label(current)));
+      return lineNode;
+    }
+
+    function statusWord(status) {
+      if (status === "still") return " still present";
+      if (status === "appeared") return " appeared";
+      return " cleared";
+    }
+
+    function addStatusList(parent, row) {
+      for (const advisory of row.advisories || []) {
+        const block = document.createElement("div");
+        block.className = "finding";
+        const head = line("p", advisory.status === "cleared" ? "cleared" : "", "");
+        head.append(line("span", "id", advisory.id || "-"));
+        head.append(document.createTextNode(statusWord(advisory.status)));
+        block.append(head);
+        if (advisory.status !== "cleared") {
+          if (advisory.summary) block.append(line("p", "summary", advisory.summary));
+          if (advisory.fixed_in) {
+            const fixed = line("p", "fixed", "fixed in ");
+            fixed.append(line("span", "fix-ver", advisory.fixed_in));
+            block.append(fixed);
+          }
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "ignore";
+          const pkg = {
+            ecosystem: row.ecosystem,
+            name: row.name,
+            version: advisory.version || "",
+          };
+          button.addEventListener("click", () => toggleIgnore(pkg, advisory, block, button));
+          block.append(button);
+          applyIgnored(block, button, ignores.has(ignoreKey(pkg, advisory)));
+        }
+        parent.append(block);
+      }
+    }
+
+    function versionFolds(body) {
+      if (!body) return [];
+      return [...body.querySelectorAll(":scope > .versions > .version > .fold")];
+    }
+
+    function linkFolds(leftFold, rightFold) {
+      if (!leftFold || !rightFold || leftFold === rightFold) return;
+      const follow = (source, other) => {
+        source.addEventListener("toggle", () => {
+          if (other.open !== source.open) other.open = source.open;
+        });
+      };
+      follow(leftFold, rightFold);
+      follow(rightFold, leftFold);
+    }
+
+    function fillSide(cell, versions, label, tallyText) {
+      cell.append(line("p", "side-label", label));
+      if (!versions.length) {
+        cell.classList.add("blank");
+        cell.append(line("p", "none", "no equivalent"));
+        return null;
+      }
+      const fold = document.createElement("details");
+      fold.className = "fold";
+      const summary = document.createElement("summary");
+      summary.append(
+        summaryName(versions[0].name || "-", versions[0].ecosystem || ""),
+        line("span", "summary-tally", tallyText || "\u00a0"),
+      );
+      fold.append(summary);
+      const body = document.createElement("div");
+      body.className = "version-body";
+      fold.append(body);
+      cell.append(fold);
+      return body;
+    }
+
+    function renderComparison(data) {
+      lastComparison = data;
+      viewKind = "comparison";
+      document.getElementById("save").disabled = false;
+      const panel = panels.report;
+      panel.replaceChildren();
+      const currentTarget = data.current && data.current.target;
+      const previousTarget = data.previous && data.previous.target;
+      const same = currentTarget !== undefined || previousTarget !== undefined
+        ? (currentTarget || "") === (previousTarget || "")
+        : selectedTarget("current") === selectedTarget("previous");
+      panel.append(line("p", "relation", same ? "Same repository" : "Different repositories"));
+      const rows = data.rows || [];
+      const table = document.createElement("table");
+      table.className = "types";
+      const caption = line("caption", "sr", "How many dependencies fall in each kind of change");
+      table.append(caption);
+      const head = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      headRow.append(line("th", "", "Change"));
+      headRow.append(line("th", "count", "Dependencies"));
+      head.append(headRow);
+      table.append(head);
+      const body = document.createElement("tbody");
+      let counted = 0;
+      for (const [key, title] of CHANGE_LABEL) {
+        const count = rows.filter((row) => row.change === key).length;
+        if (!count) continue;
+        counted += count;
+        const tr = document.createElement("tr");
+        tr.append(line("td", "", title));
+        tr.append(line("td", "count", String(count)));
+        body.append(tr);
+      }
+      table.append(body);
+      if (counted) panel.append(table);
+      else panel.append(line("p", "quiet", "No dependency changes."));
+
+      if (!rows.length) {
+        show("report", "keep");
+        return;
+      }
+      const board = document.createElement("div");
+      board.className = "compare-board";
+      const heads = document.createElement("div");
+      heads.className = "heads";
+      heads.append(line("p", "", "This scan"), line("p", "", "Previous scan"));
+      board.append(heads);
+      const missingHere = [];
+      const missingBefore = [];
+      for (const row of rows) {
+        const pair = document.createElement("div");
+        pair.className = "pair";
+        const left = document.createElement("div");
+        left.className = "cell";
+        const right = document.createElement("div");
+        right.className = "cell";
+        const current = row.current || [];
+        const previous = row.previous || [];
+        const named = (current[0] || previous[0] || {}).name || row.name || "-";
+        if (!current.length && previous.length) missingHere.push(named);
+        if (!previous.length && current.length) missingBefore.push(named);
+        const leftBody = fillSide(left, current, "This scan", current.length ? compareTally(current, row.note) : "");
+        const rightBody = fillSide(right, previous, "Previous scan", previous.length ? compareTally(previous, "") : "");
+        if (leftBody) {
+          if (row.change === "version_changed") {
+            leftBody.append(moveLine(previous, current));
+            addStatusList(leftBody, row);
+          } else addVersionFolds(leftBody, current);
+        }
+        if (rightBody) addVersionFolds(rightBody, previous);
+        linkFolds(leftBody && leftBody.parentElement, rightBody && rightBody.parentElement);
+        const leftVersions = versionFolds(leftBody);
+        const rightVersions = versionFolds(rightBody);
+        const paired = Math.min(leftVersions.length, rightVersions.length);
+        for (let index = 0; index < paired; index += 1) {
+          linkFolds(leftVersions[index], rightVersions[index]);
+        }
+        pair.append(left, right);
+        board.append(pair);
+      }
+      const missing = document.createElement("div");
+      missing.className = "missing";
+      const missingLine = (side, names) => {
+        const text = names.length ? names.join(", ") : "none";
+        return line("p", "", side + ": no equivalent — " + text);
+      };
+      missing.append(missingLine("This scan", missingHere), missingLine("Previous scan", missingBefore));
+      board.append(missing);
+      panel.append(board);
+      show("report", "keep");
+    }
+
+    async function onCompareChange() {
+      if (fillingScans) return;
+      const current = document.getElementById("current").value;
+      const previous = document.getElementById("previous").value;
+      if (!current || !previous || current === previous) {
+        if (lastReport) renderReport(lastReport, lastName);
+        return;
+      }
+      try {
+        const response = await fetch("/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ current, previous }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          showError("Compare failed.", (payload && payload.error) || "Pick two saved scans.");
+          return;
+        }
+        renderComparison(payload);
+      } catch (err) {
+        showError("Compare failed.", "The comparison could not be reached.");
+      }
+    }
+
+    function renderReport(data, filename) {
+      if (!data || typeof data !== "object" || !Array.isArray(data.packages)) {
+        showError(
+          "That file is not a supply-scan report.",
+          "The report needs a packages list.",
+        );
+        return;
+      }
+      lastReport = data;
+      lastName = filename;
+      lastComparison = null;
+      viewKind = "report";
+      document.getElementById("save").disabled = false;
+      const vulnerable = data.packages.filter((pkg) => pkg && pkg.vulns && pkg.vulns.length);
+      const unchecked = data.packages.filter(
+        (pkg) => pkg && pkg.unchecked_reason && !(pkg.vulns && pkg.vulns.length),
+      );
+      vulnerable.sort(comparePackage);
+      unchecked.sort(comparePackage);
+      const tally = data.counts || {
+        packages: data.packages.length,
+        vulnerable: vulnerable.length,
+        unchecked: data.packages.filter((pkg) => pkg && pkg.unchecked_reason).length,
+      };
+      const scannedTarget = data.target || "";
+      document.getElementById("target").value = scannedTarget;
+      const normalized = gitTarget(scannedTarget);
+      if (/^(https?:\/\/|git@)/.test(normalized)) {
+        if (listedTarget === normalized && listedBranches.length) {
+          setBranchChoices(listedBranches, data.branch || "", "");
+        } else {
+          loadBranches(data.branch || "");
+        }
+      } else if (data.branch) {
+        setBranchChoices([data.branch], data.branch, "");
+      } else {
+        setBranchChoices([], "", "Branches load from the remote after a git URL.");
+      }
+      reportHelp.textContent = filename;
+      setCommit(data.commit);
+      if (!vulnerable.length && !unchecked.length) {
+        show("empty", tally);
+        setResult(data.exit_code);
+        return;
+      }
+      const panel = panels.report;
+      panel.replaceChildren();
+      if (vulnerable.length) {
+        const list = document.createElement("ul");
+        list.className = "packages";
+        addGrouped(list, vulnerable);
+        panel.append(list);
+      }
+      if (unchecked.length) {
+        panel.append(line("h2", "group-title", "Unchecked"));
+        const list = document.createElement("ul");
+        list.className = "packages";
+        for (const pkg of unchecked) addPackage(list, pkg);
+        panel.append(list);
+      }
+      const names = Array.isArray(data.unrecognised_names)
+        ? data.unrecognised_names.filter((name) => typeof name === "string" && name)
+        : [];
+      if (names.length) {
+        panel.append(line("h2", "group-title", "Unrecognised names"));
+        const nameList = document.createElement("ul");
+        nameList.className = "packages";
+        for (const name of names) {
+          const item = document.createElement("li");
+          item.className = "package flat";
+          item.append(line("p", "pkg-name", name));
+          nameList.append(item);
+        }
+        panel.append(nameList);
+      }
+      show("report", tally);
+      setResult(data.exit_code);
+    }
+
+    async function runScan() {
+      const field = document.getElementById("target");
+      const picked = pickedFolder && field.value.trim() === pickedFolder.name ? pickedFolder : null;
+      const target = picked ? picked.name : gitTarget(field.value);
+      const branch = picked ? picked.branch : document.getElementById("branch").value.trim();
+      const strict = document.getElementById("strict").checked;
+      const button = document.getElementById("scan");
+      if (!target) {
+        showError("Enter a target.", "Use a git URL or a local directory.");
+        return;
+      }
+      reportHelp.textContent = defaultHelp;
+      show("scanning");
+      button.disabled = true;
+      const body = { target, branch: branch || null, strict };
+      if (picked) {
+        body.files = picked.files;
+        body.commit = picked.commit;
+      }
+      try {
+        const response = await fetch("/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch (err) {
+          showError("Scan failed.", "The scan could not be reached.");
+          return;
+        }
+        if (!response.ok) {
+          showError("Scan failed.", (payload && payload.error) || "The scan failed.");
+          return;
+        }
+        renderReport(payload, "Scanned just now.");
+        if (payload.scan_id) await loadScans(payload.scan_id);
+      } catch (err) {
+        showError("Scan failed.", "The scan could not be reached.");
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    const branchHelp = document.getElementById("branch-help");
+    const targetHelp = document.getElementById("target-help");
+    const targetHelpDefault = targetHelp.textContent;
+    let branchRequest = 0;
+    let listedBranches = [];
+    let listedTarget = "";
+    let pickedFolder = null;
+
+    function setBranchChoices(names, selected, help) {
+      const select = document.getElementById("branch");
+      select.replaceChildren();
+      if (!names.length) {
+        select.disabled = true;
+        select.append(line("option", "", "No branches"));
+        select.firstChild.value = "";
+        branchHelp.textContent = help || "No branches were listed.";
+        return;
+      }
+      select.disabled = false;
+      for (const name of names) {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        select.append(option);
+      }
+      select.value = names.includes(selected) ? selected : names[0];
+      branchHelp.textContent = help || "Remote branches. The default is selected.";
+    }
+
+    function gitTarget(value) {
+      const text = value.trim();
+      if (/^(https?:\/\/|git@)/i.test(text)) return text;
+      if (/^[A-Za-z]:[\\/]/.test(text) || /^([.]{1,2})?[\\/]/.test(text) || text.includes("\\")) return text;
+      if (/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(\/.*)?$/.test(text)) return "https://" + text;
+      return text;
+    }
+
+    async function loadBranches(prefer) {
+      const field = document.getElementById("target");
+      if (pickedFolder && field.value.trim() === pickedFolder.name) {
+        listedBranches = [];
+        listedTarget = "";
+        const select = document.getElementById("branch");
+        select.replaceChildren();
+        select.disabled = true;
+        const waiting = line("option", "", pickedFolder.branch || "Local folder");
+        waiting.value = pickedFolder.branch || "";
+        select.append(waiting);
+        branchHelp.textContent = pickedFolder.branch
+          ? "This folder is on " + pickedFolder.branch + "."
+          : "Local folder. Branch listing is for git URLs.";
+        return;
+      }
+      const target = gitTarget(field.value);
+      const request = ++branchRequest;
+      if (!/^(https?:\/\/|git@)/.test(target)) {
+        listedBranches = [];
+        listedTarget = "";
+        const select = document.getElementById("branch");
+        select.replaceChildren();
+        select.disabled = true;
+        const waiting = line("option", "", "Enter target first");
+        waiting.value = "";
+        select.append(waiting);
+        branchHelp.textContent = "Branches load from the remote after a git URL.";
+        return;
+      }
+      branchHelp.textContent = "Listing branches…";
+      try {
+        const response = await fetch("/branches", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target }),
+        });
+        const payload = await response.json();
+        if (request !== branchRequest) return;
+        if (!response.ok) {
+          listedBranches = [];
+          listedTarget = "";
+          setBranchChoices([], "", (payload && payload.error) || "Could not list branches.");
+          return;
+        }
+        const names = Array.isArray(payload.branches) ? payload.branches : [];
+        listedBranches = names.slice();
+        listedTarget = target;
+        const selected = prefer && names.includes(prefer) ? prefer : payload.default || "";
+        setBranchChoices(names, selected, "");
+      } catch (err) {
+        if (request !== branchRequest) return;
+        listedBranches = [];
+        listedTarget = "";
+        setBranchChoices([], "", "The branch list could not be reached.");
+      }
+    }
+
+    let branchTimer = 0;
+    const skipDirs = new Set([
+      ".git", "node_modules", "dist", "build", ".next", "__pycache__",
+      ".venv", "venv", "target", "vendor", "site-packages",
+    ]);
+    const manifestNames = new Set([
+      "cargo.toml", "cargo.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+      "package.json", "go.mod", "composer.lock", "composer.json",
+      "pubspec.lock", "pubspec.yaml", "gemfile.lock", "gemfile",
+      "gradle.lockfile", "libs.versions.toml", "pom.xml",
+      "uv.lock", "poetry.lock", "pyproject.toml",
+    ]);
+
+    function isManifest(name) {
+      const lower = String(name || "").toLowerCase();
+      return manifestNames.has(lower) || (lower.startsWith("requirements") && lower.endsWith(".txt"));
+    }
+
+    function rememberFolder(name, files, branch, commit) {
+      pickedFolder = {
+        name: name || "folder",
+        files,
+        branch: branch || null,
+        commit: commit || null,
+      };
+      const input = document.getElementById("target");
+      input.value = pickedFolder.name;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      targetHelp.textContent = "Folder selected in the browser. Press Scan.";
+    }
+
+    async function readGitIdentity(root) {
+      let git;
+      try {
+        git = await root.getDirectoryHandle(".git");
+      } catch (err) {
+        return { branch: null, commit: null };
+      }
+      let head = "";
+      try {
+        head = (await (await (await git.getFileHandle("HEAD")).getFile()).text()).trim();
+      } catch (err) {
+        return { branch: null, commit: null };
+      }
+      if (/^[0-9a-f]{7,40}$/i.test(head)) return { branch: null, commit: head };
+      const ref = head.startsWith("ref:") ? head.slice(4).trim() : "";
+      if (!ref.startsWith("refs/heads/")) return { branch: null, commit: null };
+      const branch = ref.slice("refs/heads/".length);
+      let commit = null;
+      try {
+        const parts = ref.split("/");
+        let dir = git;
+        for (let i = 0; i < parts.length - 1; i += 1) {
+          dir = await dir.getDirectoryHandle(parts[i]);
+        }
+        commit = (await (await (await dir.getFileHandle(parts[parts.length - 1])).getFile()).text()).trim();
+      } catch (err) {
+        commit = null;
+      }
+      if (!/^[0-9a-f]{7,40}$/i.test(commit || "")) commit = null;
+      return { branch, commit };
+    }
+
+    async function readManifests(handle, prefix, out) {
+      for await (const [name, child] of handle.entries()) {
+        if (out.length > 2000) return;
+        if (child.kind === "directory") {
+          if (skipDirs.has(name)) continue;
+          try {
+            await readManifests(child, prefix ? prefix + "/" + name : name, out);
+          } catch (err) {
+            continue;
+          }
+          continue;
+        }
+        if (!isManifest(name)) continue;
+        const file = await child.getFile();
+        if (file.size > 16000000) continue;
+        out.push({
+          path: prefix ? prefix + "/" + name : name,
+          text: await file.text(),
+        });
+      }
+    }
+
+    async function useDirectoryHandle(handle) {
+      const button = document.getElementById("browse");
+      button.disabled = true;
+      targetHelp.textContent = "Reading folder…";
+      try {
+        const files = [];
+        await readManifests(handle, "", files);
+        const identity = await readGitIdentity(handle);
+        rememberFolder(handle.name, files, identity.branch, identity.commit);
+      } catch (err) {
+        targetHelp.textContent = targetHelpDefault;
+        showError("Could not browse.", "That folder could not be read.");
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function useFileList(list) {
+      const files = [];
+      let name = "folder";
+      for (const file of list) {
+        const relative = file.webkitRelativePath || file.name;
+        const parts = relative.split(/[/\\]/).filter(Boolean);
+        if (!parts.length) continue;
+        if (parts.length > 1) name = parts[0];
+        if (parts.slice(1).some((part) => skipDirs.has(part))) continue;
+        const fileName = parts[parts.length - 1];
+        if (!isManifest(fileName) || file.size > 16000000) continue;
+        const path = parts.length > 1 ? parts.slice(1).join("/") : fileName;
+        files.push({ path, text: await file.text() });
+        if (files.length > 2000) break;
+      }
+      rememberFolder(name, files, null, null);
+    }
+
+    document.getElementById("browse").addEventListener("click", async () => {
+      if (window.showDirectoryPicker) {
+        try {
+          const handle = await window.showDirectoryPicker({ mode: "read" });
+          await useDirectoryHandle(handle);
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+          showError("Could not browse.", "The folder window could not be opened.");
+        }
+        return;
+      }
+      document.getElementById("folder").click();
+    });
+
+    document.getElementById("folder").addEventListener("change", async (event) => {
+      const list = event.target.files;
+      event.target.value = "";
+      if (!list || !list.length) return;
+      try {
+        await useFileList(list);
+      } catch (err) {
+        targetHelp.textContent = targetHelpDefault;
+        showError("Could not browse.", "That folder could not be read.");
+      }
+    });
+
+    document.getElementById("target").addEventListener("input", () => {
+      if (!pickedFolder || document.getElementById("target").value.trim() !== pickedFolder.name) {
+        pickedFolder = null;
+        targetHelp.textContent = targetHelpDefault;
+      }
+      window.clearTimeout(branchTimer);
+      branchTimer = window.setTimeout(loadBranches, 400);
+    });
+
+    document.getElementById("setup").addEventListener("submit", (event) => {
+      event.preventDefault();
+    });
+
+    document.getElementById("scan").addEventListener("click", () => {
+      runScan();
+    });
+
+    function fileStamp(value) {
+      const date = value ? new Date(value) : new Date();
+      const when = Number.isNaN(date.getTime()) ? new Date() : date;
+      const part = (number) => String(number).padStart(2, "0");
+      return (
+        when.getFullYear() + "-" + part(when.getMonth() + 1) + "-" + part(when.getDate())
+        + "_" + part(when.getHours()) + part(when.getMinutes())
+      );
+    }
+
+    function fileToken(value, fallback) {
+      const token = String(value || "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+      return token || fallback;
+    }
+
+    function repoName(target) {
+      const parts = String(target || "").split(/[/\\]/).filter(Boolean);
+      const last = parts.length ? parts[parts.length - 1].replace(/\.git$/i, "") : "";
+      return fileToken(last, "scan");
+    }
+
+    function reportFileName(data) {
+      const entry = data.scan_id ? scanIndex.get(data.scan_id) : null;
+      const branch = fileToken(data.branch, "no-branch");
+      return repoName(data.target) + "_" + branch + "_" + fileStamp(entry && entry.saved_at) + ".json";
+    }
+
+    function comparisonFileName(current, previous) {
+      const left = repoName(current.target) + "_" + fileToken(current.branch, "no-branch");
+      const rightRepo = repoName(previous.target);
+      const rightBranch = fileToken(previous.branch, "no-branch");
+      const right = repoName(current.target) === rightRepo ? rightBranch : rightRepo + "_" + rightBranch;
+      return left + "_vs_" + right + "_" + fileStamp(current.saved_at || previous.saved_at) + ".json";
+    }
+
+    function sideRecord(id) {
+      const entry = scanIndex.get(id) || {};
+      return {
+        target: entry.target || "",
+        branch: entry.branch || "",
+        commit: entry.commit || null,
+        saved_at: entry.saved_at || "",
+      };
+    }
+
+    function comparisonDocument() {
+      if (lastComparison && lastComparison.kind === "supply-scan-comparison") return lastComparison;
+      return {
+        kind: "supply-scan-comparison",
+        current: sideRecord(document.getElementById("current").value),
+        previous: sideRecord(document.getElementById("previous").value),
+        rows: (lastComparison && lastComparison.rows) || [],
+      };
+    }
+
+    async function writeJson(filename, payload) {
+      const blob = new Blob([JSON.stringify(payload, null, 2) + "\n"], { type: "application/json" });
+      if (window.showSaveFilePicker) {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: filename,
+            types: [{ description: "JSON report", accept: { "application/json": [".json"] } }],
+          });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          reportHelp.textContent = handle.name || filename;
+          return;
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+        }
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      reportHelp.textContent = filename;
+    }
+
+    document.getElementById("save").addEventListener("click", () => {
+      if (viewKind === "comparison" && lastComparison) {
+        const documentBody = comparisonDocument();
+        writeJson(comparisonFileName(documentBody.current || {}, documentBody.previous || {}), documentBody);
+        return;
+      }
+      if (!lastReport) return;
+      const copy = Object.assign({}, lastReport);
+      delete copy.scan_id;
+      writeJson(reportFileName(lastReport), copy);
+    });
+
+    function openDocument(data, filename) {
+      if (data && data.kind === "supply-scan-comparison" && Array.isArray(data.rows)) {
+        renderComparison(data);
+        reportHelp.textContent = filename;
+        return;
+      }
+      renderReport(data, filename);
+    }
+
+    document.getElementById("report").addEventListener("change", (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        event.target.value = "";
+        try {
+          openDocument(JSON.parse(String(reader.result)), file.name);
+        } catch (err) {
+          showError("That file is not a supply-scan report.", "The file is not JSON.");
+        }
+      };
+      reader.onerror = () => {
+        event.target.value = "";
+        showError("That file is not a supply-scan report.", "The file could not be read.");
+      };
+      reader.readAsText(file);
+    });
+
+    document.getElementById("open-only").addEventListener("change", (event) => {
+      document.body.classList.toggle("open-only", event.target.checked);
+    });
+
+    document.getElementById("compare").addEventListener("click", () => {
+      onCompareChange();
+    });
+
+    document.getElementById("open-history").addEventListener("click", async () => {
+      const id = document.getElementById("history").value;
+      if (!id) return;
+      try {
+        const response = await fetch("/scans/" + id);
+        const payload = await response.json();
+        if (!response.ok) {
+          showError("Could not open that scan.", (payload && payload.error) || "That scan was not saved.");
+          return;
+        }
+        payload.scan_id = id;
+        const entry = scanIndex.get(id);
+        renderReport(payload, entry ? scanLabel(entry) : "Saved scan");
+      } catch (err) {
+        showError("Could not open that scan.", "The saved scan could not be reached.");
+      }
+    });
+
+    show("ready");
+    loadIgnores();
+    loadScans();
+  </script>
+</body>
+</html>
