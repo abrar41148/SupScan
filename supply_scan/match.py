@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+from functools import cmp_to_key
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -14,6 +15,7 @@ from decimal import Decimal, ROUND_CEILING
 
 from supply_scan.cache import DiskCache, NullCache, default_cache_dir
 from supply_scan.inventory import Package
+from supply_scan.osv_zip import read_advisory_from_zip, zip_hydration_enabled
 from supply_scan.versions import version_key
 
 OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
@@ -32,6 +34,13 @@ _WORDS = {
     "MEDIUM": "medium",
     "LOW": "low",
 }
+_SEVERITY_RANK = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 3,
+    "unknown": 4,
+}
 
 
 class MatchError(Exception):
@@ -47,6 +56,7 @@ class Finding:
     fixed_in: str | None
     kind: str
     precise: bool
+    related_ids: tuple[str, ...] = ()
 
 
 def version_tuple(value: str | None, ecosystem: str | None = None):
@@ -62,6 +72,31 @@ def _cmp(left: str, right: str, ecosystem: str | None = None) -> int | None:
     return (left_key > right_key) - (left_key < right_key)
 
 
+def _event_version(event: dict) -> str:
+    for field in ("introduced", "fixed", "limit", "last_affected"):
+        if field in event:
+            return str(event[field])
+    return ""
+
+
+def _sort_range_events(events: list[dict], ecosystem: str | None) -> list[dict]:
+    """Order range events before walking them (same idea as osv-scalibr vulns.rangeContainsVersion)."""
+    if len(events) < 2:
+        return events
+
+    def compare(left: dict, right: dict) -> int:
+        if str(left.get("introduced")) == "0":
+            return -1
+        if str(right.get("introduced")) == "0":
+            return 1
+        order = _cmp(_event_version(left), _event_version(right), ecosystem)
+        if order is None:
+            return 0
+        return order
+
+    return sorted(events, key=cmp_to_key(compare))
+
+
 def _matching_interval(
     installed: str,
     events: list[dict],
@@ -72,6 +107,7 @@ def _matching_interval(
     contained is None when a bound does not parse. A matching interval with no
     fixed event means there is no patched release.
     """
+    events = _sort_range_events(events, ecosystem)
     index = 0
     contained = False
     while index < len(events):
@@ -225,13 +261,17 @@ def _finding(vuln: dict, package: Package) -> Finding | None:
     imprecise = False
     if not events_list:
         imprecise = True
+    contained_any = False
     for events in events_list:
         contained = range_contains(package.version or "", events, package.ecosystem)
         if contained is None:
             imprecise = True
             continue
         if contained:
+            contained_any = True
             precise_fixes.append(_segment_fix(package.version or "", events, package.ecosystem))
+    if events_list and not imprecise and not contained_any:
+        return None
     if imprecise:
         collected = []
         for events in events_list:
@@ -260,6 +300,98 @@ def _finding(vuln: dict, package: Package) -> Finding | None:
     )
 
 
+def _vuln_ids(vuln: dict) -> set[str]:
+    found = {str(vuln.get("id") or "")}
+    found.discard("")
+    for alias in vuln.get("aliases") or []:
+        text = str(alias)
+        if text:
+            found.add(text)
+    return found
+
+
+def _primary_osv_id(ids: set[str]) -> str:
+    for prefix in ("GHSA-", "CVE-", "MAL-", "PYSEC-", "GO-"):
+        matches = sorted(item for item in ids if item.startswith(prefix))
+        if matches:
+            return matches[0]
+    return min(ids)
+
+
+def _merge_findings(group: list[Finding], ecosystem: str | None) -> Finding:
+    primary = _primary_osv_id({item.osv_id for item in group})
+    best = min(
+        group,
+        key=lambda item: (
+            0 if item.osv_id == primary else 1,
+            _SEVERITY_RANK.get(item.severity, 9),
+            item.osv_id,
+        ),
+    )
+    related = tuple(sorted({item.osv_id for item in group} - {best.osv_id}))
+    fixes = [item.fixed_in for item in group if item.fixed_in]
+    fixed_in = best.fixed_in
+    if fixes and all(version_tuple(fix, ecosystem) for fix in fixes):
+        fixed_in = max(fixes, key=lambda item: version_tuple(item, ecosystem) or ())
+    cve = best.cve or next((item.cve for item in group if item.cve), None)
+    precise = all(item.precise for item in group)
+    return Finding(
+        osv_id=best.osv_id,
+        cve=cve,
+        severity=min(group, key=lambda item: _SEVERITY_RANK.get(item.severity, 9)).severity,
+        summary=best.summary,
+        fixed_in=fixed_in,
+        kind="malware" if any(item.kind == "malware" for item in group) else "vulnerability",
+        precise=precise,
+        related_ids=related,
+    )
+
+
+def _group_findings(
+    findings: list[Finding],
+    vulns: list[dict],
+    ecosystem: str | None = None,
+) -> list[Finding]:
+    if len(findings) < 2:
+        return findings
+    labels: list[set[str]] = []
+    for finding, vuln in zip(findings, vulns):
+        cluster = _vuln_ids(vuln)
+        cluster.add(finding.osv_id)
+        if finding.cve:
+            cluster.add(finding.cve)
+        labels.append(cluster)
+    parent = list(range(len(findings)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    for left in range(len(findings)):
+        for right in range(left + 1, len(findings)):
+            if labels[left] & labels[right]:
+                union(left, right)
+
+    buckets: dict[int, list[Finding]] = {}
+    for index, finding in enumerate(findings):
+        buckets.setdefault(find(index), []).append(finding)
+    grouped: list[Finding] = []
+    for bucket in buckets.values():
+        grouped.append(
+            _merge_findings(bucket, ecosystem) if len(bucket) > 1 else bucket[0],
+        )
+    grouped.sort(key=lambda item: (_SEVERITY_RANK.get(item.severity, 9), item.osv_id))
+    return grouped
+
+
 def _recommend(findings: list[Finding], ecosystem: str | None) -> str | None:
     if any(not finding.precise for finding in findings):
         return None
@@ -274,15 +406,17 @@ def annotate(packages: list[Package], results: list[dict]) -> None:
     if len(results) != len(targets):
         raise MatchError(f"OSV returned {len(results)} results for {len(targets)} packages")
     for package, result in zip(targets, results):
+        vulns = []
         findings = []
         for vuln in (result or {}).get("vulns") or []:
             if vuln.get("withdrawn"):
                 continue
             finding = _finding(vuln, package)
             if finding is not None:
+                vulns.append(vuln)
                 findings.append(finding)
-        package.vulns = findings
-        package.recommend = _recommend(findings, package.ecosystem)
+        package.vulns = _group_findings(findings, vulns, package.ecosystem)
+        package.recommend = _recommend(package.vulns, package.ecosystem)
 
 
 def _fetch_vuln(osv_id: str) -> dict:
@@ -397,10 +531,13 @@ def query_osv(
 
     filled = [result or {"vulns": []} for result in results]
     needed: list[str] = []
-    for result in filled:
+    id_ecosystem: dict[str, str] = {}
+    for package, result in zip(targets, filled):
         for vuln in (result or {}).get("vulns") or []:
             if vuln.get("id") and not vuln.get("affected"):
-                needed.append(str(vuln["id"]))
+                osv_id = str(vuln["id"])
+                needed.append(osv_id)
+                id_ecosystem.setdefault(osv_id, package.ecosystem)
     advisory_total = len(list(dict.fromkeys(needed)))
     advisory_done = 0
     advisory_lock = threading.Lock()
@@ -411,7 +548,13 @@ def query_osv(
         if cached is not None:
             body = cached
         else:
-            body = _fetch_vuln(osv_id)
+            body = None
+            if zip_hydration_enabled() and isinstance(cache, DiskCache):
+                ecosystem = id_ecosystem.get(osv_id)
+                if ecosystem:
+                    body = read_advisory_from_zip(osv_id, ecosystem, cache)
+            if body is None:
+                body = _fetch_vuln(osv_id)
             cache.put_advisory(osv_id, body)
         if on_progress is not None and advisory_total:
             with advisory_lock:

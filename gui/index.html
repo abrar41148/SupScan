@@ -51,7 +51,7 @@
       justify-content: space-between;
       gap: 1rem;
       height: 4rem;
-      padding: 0 1.5rem;
+      padding: 0 1.5rem 0 1rem;
       border-bottom: 1px solid var(--rule);
       background: var(--sheet);
     }
@@ -121,6 +121,101 @@
 
     .target-row input { flex: 1; min-width: 12rem; }
 
+    .target-grid {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .target-grid th {
+      text-align: left;
+      font-weight: 600;
+      font-size: 0.92rem;
+      padding: 0 0.35rem 0.35rem 0;
+    }
+
+    .target-grid td {
+      padding: 0.25rem 0.35rem 0.25rem 0;
+      vertical-align: top;
+    }
+
+    .target-grid td:last-child {
+      width: 2.25rem;
+      padding-right: 0;
+    }
+
+    .target-grid col.repo-col { width: 52%; }
+    .target-grid col.branch-col { width: auto; }
+
+    .target-grid input {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .target-grid select {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .row-remove {
+      border: 1px solid var(--line);
+      background: var(--sheet);
+      padding: 0.35rem 0.45rem;
+      cursor: pointer;
+      line-height: 1;
+    }
+
+    .row-remove:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+
+    .row-error {
+      margin: 0.15rem 0 0;
+      color: #8a2020;
+      font-size: 0.85rem;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
+    .target-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+      margin-top: 0.35rem;
+    }
+
+    .batch-summary {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.75rem;
+      font-size: 0.95rem;
+    }
+
+    .batch-summary th,
+    .batch-summary td {
+      text-align: left;
+      padding: 0.45rem 0.65rem 0.45rem 0;
+      border-bottom: 1px solid var(--rule);
+      vertical-align: top;
+    }
+
+    .batch-open {
+      border: 1px solid var(--line);
+      background: var(--sheet);
+      padding: 0.25rem 0.55rem;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .batch-result-error {
+      color: #8a2020;
+      font-size: 0.88rem;
+      max-width: 14rem;
+      line-height: 1.3;
+    }
+
     .file {
       position: absolute;
       inset: 0;
@@ -139,11 +234,12 @@
 
     .workspace {
       display: grid;
-      grid-template-columns: 17rem minmax(0, 1fr);
+      grid-template-columns: minmax(22rem, 28rem) minmax(0, 1fr);
       gap: 2.5rem;
-      max-width: 72rem;
-      margin: 0 auto;
-      padding: 1.75rem 1.5rem 3rem;
+      width: 100%;
+      margin: 0;
+      padding: 1.75rem 1.5rem 3rem 1rem;
+      box-sizing: border-box;
     }
 
     .rail h2,
@@ -368,6 +464,22 @@
     .id {
       font-family: var(--mono);
       font-size: 0.92rem;
+    }
+
+    a.id {
+      color: inherit;
+      text-decoration-line: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 0.16em;
+    }
+
+    a.id:hover {
+      color: var(--fix);
+    }
+
+    a.id:focus-visible {
+      outline: 2px solid var(--fix);
+      outline-offset: 2px;
     }
 
     .fix-ver {
@@ -632,20 +744,28 @@
           <p class="help" id="report-help">Open a scan or a saved comparison. Save suggests repo, branch, and time.</p>
         </div>
         <div class="field">
-          <label for="target">Target</label>
-          <div class="target-row">
-            <input id="target" name="target" type="text" autocomplete="off">
-            <button class="open" type="button" id="browse">Browse</button>
+          <span id="targets-label">Targets</span>
+          <table class="target-grid" aria-labelledby="targets-label">
+            <colgroup>
+              <col class="repo-col">
+              <col class="branch-col">
+              <col class="remove-col">
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col">Repo</th>
+                <th scope="col">Branch</th>
+                <th scope="col"><span class="quiet">Remove</span></th>
+              </tr>
+            </thead>
+            <tbody id="target-rows"></tbody>
+          </table>
+          <div class="target-actions">
+            <button class="open" type="button" id="add-target">Add repo</button>
+            <button class="open" type="button" id="browse">Browse folder</button>
             <input id="folder" type="file" webkitdirectory multiple hidden>
           </div>
-          <p class="help" id="target-help">Git URL or local directory. Browse uses the browser's folder window.</p>
-        </div>
-        <div class="field">
-          <label for="branch">Branch</label>
-          <select id="branch" name="branch" disabled>
-            <option value="">Enter target first</option>
-          </select>
-          <p class="help" id="branch-help">Branches load from the remote after a git URL.</p>
+          <p class="help" id="target-help">Up to four git URLs or local paths. Each git URL loads its own branch list. Private HTTPS repos use the same Git login as your terminal (Credential Manager).</p>
         </div>
         <label class="check">
           <input id="strict" name="strict" type="checkbox">
@@ -736,6 +856,23 @@
           </div>
         </div>
       </div>
+      <div class="panel" id="state-batch" hidden>
+        <h2>Batch results</h2>
+        <p class="quiet">Open one report below. Each finished scan is also in Saved scan.</p>
+        <table class="batch-summary" id="batch-summary">
+          <thead>
+            <tr>
+              <th scope="col">Target</th>
+              <th scope="col">Branch</th>
+              <th scope="col">Packages</th>
+              <th scope="col">Vulnerable</th>
+              <th scope="col">Result</th>
+              <th scope="col">Open</th>
+            </tr>
+          </thead>
+          <tbody id="batch-summary-body"></tbody>
+        </table>
+      </div>
       <div class="panel" id="state-empty" hidden>
         <h2>Clear</h2>
         <p>No known vulnerabilities in resolved packages.</p>
@@ -760,7 +897,10 @@
       empty: document.getElementById("state-empty"),
       error: document.getElementById("state-error"),
       report: document.getElementById("state-report"),
+      batch: document.getElementById("state-batch"),
     };
+    const MAX_TARGETS = 4;
+    let lastBatchReports = null;
     const ignores = new Set();
     let lastReport = null;
     let lastName = "";
@@ -783,11 +923,17 @@
     }
 
     function setResult(code) {
-      const shown = code === 0 || code === 1;
+      const shown = code === 0 || code === 1 || code === 2;
       document.getElementById("result-label").hidden = !shown;
       const node = document.getElementById("result");
       node.hidden = !shown;
-      node.textContent = code === 1 ? "Fail" : code === 0 ? "Pass" : "";
+      node.textContent = code === 1 ? "Fail" : code === 0 ? "Pass" : code === 2 ? "Error" : "";
+    }
+
+    function exitLabel(code) {
+      if (code === 2) return "Error";
+      if (code === 1) return "Fail";
+      return "Pass";
     }
 
     function line(tag, className, text) {
@@ -865,22 +1011,35 @@
       setMeter("scan-packages-bar", "scan-packages-value", 0, "—", true);
     }
 
+    function scanTargetTag(event) {
+      if (!event.target) return "";
+      const branch = event.branch ? " @ " + event.branch : "";
+      const pos = event.target_total > 1
+        ? " (" + (Number(event.target_index) + 1) + " of " + event.target_total + ")"
+        : "";
+      return repoName(event.target) + branch + pos + ": ";
+    }
+
     function renderScanProgress(event) {
       const status = document.getElementById("scan-status");
+      const tag = scanTargetTag(event);
       if (event.phase === "clone") {
-        status.textContent = "Cloning the repository.";
+        status.textContent = event.target
+          ? "Cloning " + repoName(event.target) + (event.branch ? " @ " + event.branch : "")
+            + (event.target_total > 1 ? " (" + (Number(event.target_index) + 1) + " of " + event.target_total + ")." : ".")
+          : "Cloning the repository.";
         setMeter("scan-files-bar", "scan-files-value", 0, "—", true);
         setMeter("scan-size-bar", "scan-size-value", 0, "—", true);
         return;
       }
       if (event.phase === "count") {
-        status.textContent = "Counting files.";
+        status.textContent = tag + "Counting files.";
         setMeter("scan-files-bar", "scan-files-value", 0, `${formatCount(event.files_done)} so far`, true);
         setMeter("scan-size-bar", "scan-size-value", 0, `${formatBytes(event.bytes_done)} so far`, true);
         return;
       }
       if (event.phase === "read") {
-        status.textContent = "Reading the tree.";
+        status.textContent = tag + "Reading the tree.";
         setMeter(
           "scan-files-bar",
           "scan-files-value",
@@ -898,7 +1057,7 @@
         return;
       }
       if (event.phase === "osv") {
-        status.textContent = "Asking OSV.";
+        status.textContent = event.batch_osv ? "Asking OSV (shared across repos)." : tag + "Asking OSV.";
         const row = document.getElementById("scan-packages");
         row.hidden = false;
         document.getElementById("scan-packages-name").textContent = "Packages";
@@ -912,7 +1071,7 @@
         return;
       }
       if (event.phase === "advisories") {
-        status.textContent = "Reading advisories.";
+        status.textContent = event.batch_osv ? "Reading advisories (shared)." : tag + "Reading advisories.";
         const row = document.getElementById("scan-packages");
         row.hidden = false;
         document.getElementById("scan-packages-name").textContent = "Advisories";
@@ -952,9 +1111,12 @@
       return result;
     }
 
-    function showError(title, body) {
+    function showError(title, body, detail) {
       document.getElementById("error-title").textContent = title;
-      document.getElementById("error-body").textContent = body;
+      const node = document.getElementById("error-body");
+      node.textContent = body;
+      if (detail && detail !== body) node.title = detail;
+      else node.removeAttribute("title");
       show("error");
     }
 
@@ -1059,21 +1221,45 @@
       return wrap;
     }
 
+    function osvUrl(id) {
+      const text = String(id || "").trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{2,}$/.test(text)) return "";
+      return "https://osv.dev/vulnerability/" + encodeURIComponent(text);
+    }
+
+    function osvLink(id) {
+      const text = String(id || "").trim() || "-";
+      const url = osvUrl(text);
+      if (!url) return line("span", "id", text);
+      const anchor = document.createElement("a");
+      anchor.className = "id";
+      anchor.href = url;
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer";
+      anchor.textContent = text;
+      return anchor;
+    }
+
     function addFindings(parent, pkg) {
       const findings = [...(pkg.vulns || [])].sort(compareFinding);
       for (const finding of findings) {
         const block = document.createElement("div");
         block.className = "finding";
-        const bits = [finding.id || "-"];
-        if (finding.cve) bits.push(finding.cve);
-        if (finding.kind === "malware") bits.push("malware");
-        bits.push(finding.severity || "unknown");
         const head = line("p", "", "");
-        bits.forEach((bit, index) => {
-          if (index) head.append(document.createTextNode("  "));
-          const idLike = index === 0 || bit === finding.cve;
-          head.append(idLike ? line("span", "id", bit) : document.createTextNode(bit));
-        });
+        head.append(osvLink(finding.id || "-"));
+        if (finding.cve && finding.cve !== finding.id) {
+          head.append(document.createTextNode("  "));
+          head.append(osvLink(finding.cve));
+        }
+        if (finding.related_ids && finding.related_ids.length) {
+          head.append(document.createTextNode("  also"));
+          for (const related of finding.related_ids) {
+            head.append(document.createTextNode(" "));
+            head.append(osvLink(related));
+          }
+        }
+        if (finding.kind === "malware") head.append(document.createTextNode("  malware"));
+        head.append(document.createTextNode("  " + (finding.severity || "unknown")));
         block.append(head);
         if (finding.summary) block.append(line("p", "summary", finding.summary));
         if (finding.fixed_in) {
@@ -1086,7 +1272,7 @@
         button.className = "ignore";
         button.addEventListener("click", () => toggleIgnore(pkg, finding, block, button));
         block.append(button);
-        applyIgnored(block, button, ignores.has(ignoreKey(pkg, finding)));
+        applyIgnored(block, button, findingIgnored(pkg, finding));
         parent.append(block);
       }
       if (Object.hasOwn(pkg, "previous_recommend")) {
@@ -1179,8 +1365,21 @@
       list.append(item);
     }
 
+    function advisoryIds(finding) {
+      const ids = [finding.id || ""].filter(Boolean);
+      for (const item of finding.related_ids || []) {
+        if (item) ids.push(item);
+      }
+      return ids;
+    }
+
     function ignoreKey(pkg, finding) {
       return [pkg.ecosystem || "", pkg.name || "", pkg.version || "", finding.id || ""].join("\n");
+    }
+
+    function findingIgnored(pkg, finding) {
+      const base = [pkg.ecosystem || "", pkg.name || "", pkg.version || ""];
+      return advisoryIds(finding).some((id) => ignores.has([...base, id].join("\n")));
     }
 
     function rememberIgnores(entries) {
@@ -1371,7 +1570,7 @@
         const block = document.createElement("div");
         block.className = "finding";
         const head = line("p", advisory.status === "cleared" ? "cleared" : "", "");
-        head.append(line("span", "id", advisory.id || "-"));
+        head.append(osvLink(advisory.id || "-"));
         head.append(document.createTextNode(statusWord(advisory.status)));
         block.append(head);
         if (advisory.status !== "cleared") {
@@ -1577,20 +1776,7 @@
         vulnerable: vulnerable.length,
         unchecked: data.packages.filter((pkg) => pkg && pkg.unchecked_reason).length,
       };
-      const scannedTarget = data.target || "";
-      document.getElementById("target").value = scannedTarget;
-      const normalized = gitTarget(scannedTarget);
-      if (/^(https?:\/\/|git@)/.test(normalized)) {
-        if (listedTarget === normalized && listedBranches.length) {
-          setBranchChoices(listedBranches, data.branch || "", "");
-        } else {
-          loadBranches(data.branch || "");
-        }
-      } else if (data.branch) {
-        setBranchChoices([data.branch], data.branch, "");
-      } else {
-        setBranchChoices([], "", "Branches load from the remote after a git URL.");
-      }
+      setRowsFromReport(data);
       reportHelp.textContent = filename;
       setCommit(data.commit);
       if (!vulnerable.length && !unchecked.length) {
@@ -1632,64 +1818,167 @@
       setResult(data.exit_code);
     }
 
+    function renderBatchSummary(payload) {
+      lastBatchReports = payload.reports || [];
+      lastReport = null;
+      lastComparison = null;
+      viewKind = "batch";
+      document.getElementById("save").disabled = true;
+      const body = document.getElementById("batch-summary-body");
+      body.replaceChildren();
+      let tally = { packages: 0, vulnerable: 0, unchecked: 0 };
+      for (let index = 0; index < lastBatchReports.length; index += 1) {
+        const report = lastBatchReports[index];
+        const counts = report.counts || {
+          packages: (report.packages || []).length,
+          vulnerable: (report.packages || []).filter((pkg) => pkg && pkg.vulns && pkg.vulns.length).length,
+          unchecked: (report.packages || []).filter((pkg) => pkg && pkg.unchecked_reason).length,
+        };
+        tally.packages += counts.packages || 0;
+        tally.vulnerable += counts.vulnerable || 0;
+        tally.unchecked += counts.unchecked || 0;
+        const row = document.createElement("tr");
+        const targetCell = document.createElement("td");
+        targetCell.textContent = report.target || "-";
+        targetCell.title = report.target || "";
+        row.append(targetCell);
+        row.append(line("td", "", report.branch || "—"));
+        row.append(line("td", "", String(counts.packages ?? "-")));
+        row.append(line("td", "", String(counts.vulnerable ?? "-")));
+        const resultCell = document.createElement("td");
+        if (report.error) {
+          resultCell.textContent = report.error;
+          resultCell.className = "batch-result-error";
+          const detail = report.error_detail || report.error;
+          if (detail && detail !== report.error) resultCell.title = detail;
+        } else {
+          resultCell.textContent = exitLabel(report.exit_code);
+        }
+        row.append(resultCell);
+        const openCell = document.createElement("td");
+        const openBtn = document.createElement("button");
+        openBtn.type = "button";
+        openBtn.className = "batch-open";
+        openBtn.textContent = "Open";
+        openBtn.disabled = Boolean(report.error) && !(report.packages && report.packages.length);
+        openBtn.addEventListener("click", () => {
+          renderReport(lastBatchReports[index], "Batch scan.");
+          if (report.scan_id) loadScans(report.scan_id);
+        });
+        openCell.append(openBtn);
+        row.append(openCell);
+        body.append(row);
+      }
+      reportHelp.textContent = "Batch scan finished.";
+      setCommit("");
+      show("batch", tally);
+      setResult(payload.exit_code);
+    }
+
+    async function postScan(body) {
+      const response = await fetch("/scan", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/x-ndjson",
+        },
+        body: JSON.stringify(body),
+      });
+      const type = response.headers.get("content-type") || "";
+      if (type.includes("ndjson")) {
+        const streamed = await readScanStream(response);
+        if (!streamed || !streamed.ok) {
+          return {
+            ok: false,
+            error: (streamed && streamed.error) || "The scan failed.",
+            error_detail: streamed && streamed.error_detail,
+          };
+        }
+        if (streamed.reports) {
+          return { ok: true, reports: streamed.reports, exit_code: streamed.exit_code };
+        }
+        return { ok: true, report: streamed.report };
+      }
+      const payload = await response.json();
+      if (!response.ok) {
+        return {
+          ok: false,
+          error: (payload && payload.error) || "The scan failed.",
+          error_detail: payload && payload.error_detail,
+        };
+      }
+      if (payload.reports) {
+        return { ok: true, reports: payload.reports, exit_code: payload.exit_code };
+      }
+      return { ok: true, report: payload };
+    }
+
     async function runScan() {
-      const field = document.getElementById("target");
-      const picked = pickedFolder && field.value.trim() === pickedFolder.name ? pickedFolder : null;
-      const target = picked ? picked.name : gitTarget(field.value);
-      const branch = picked ? picked.branch : document.getElementById("branch").value.trim();
       const strict = document.getElementById("strict").checked;
       const button = document.getElementById("scan");
-      if (!target) {
+      const picked = pickedFolder && targetRows.length === 1
+        && targetRows[0].input.value.trim() === pickedFolder.name
+        ? pickedFolder
+        : null;
+      if (picked) {
+        reportHelp.textContent = defaultHelp;
+        show("scanning");
+        button.disabled = true;
+        try {
+          const result = await postScan({
+            target: picked.name,
+            branch: picked.branch || null,
+            strict,
+            files: picked.files,
+            commit: picked.commit,
+          });
+          if (!result.ok) {
+            showError("Scan failed.", result.error || "The scan failed.", result.error_detail);
+            return;
+          }
+          renderReport(result.report, "Scanned just now.");
+          if (result.report.scan_id) await loadScans(result.report.scan_id);
+        } catch (err) {
+          showError("Scan failed.", "The scan could not be reached.");
+        } finally {
+          button.disabled = false;
+        }
+        return;
+      }
+      if (targetRows.length > 1 && pickedFolder) {
+        showError("Browse one folder at a time.", "Remove extra targets or clear the folder row.");
+        return;
+      }
+      const blocked = validateTargetRows();
+      if (blocked) {
+        showError("Fix the targets.", blocked);
+        return;
+      }
+      const targets = collectTargetPayload();
+      if (!targets.length) {
         showError("Enter a target.", "Use a git URL or a local directory.");
         return;
       }
       reportHelp.textContent = defaultHelp;
       show("scanning");
       button.disabled = true;
-      const body = { target, branch: branch || null, strict };
-      if (picked) {
-        body.files = picked.files;
-        body.commit = picked.commit;
-      }
+      const body = targets.length === 1
+        ? { target: targets[0].target, branch: targets[0].branch, strict }
+        : { targets, strict };
       try {
-        const response = await fetch("/scan", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Accept": "application/x-ndjson",
-          },
-          body: JSON.stringify(body),
-        });
-        const type = response.headers.get("content-type") || "";
-        if (type.includes("ndjson")) {
-          let result = null;
-          try {
-            result = await readScanStream(response);
-          } catch (err) {
-            showError("Scan failed.", "The scan could not be reached.");
-            return;
-          }
-          if (!result || !result.ok) {
-            showError("Scan failed.", (result && result.error) || "The scan failed.");
-            return;
-          }
-          renderReport(result.report, "Scanned just now.");
-          if (result.report.scan_id) await loadScans(result.report.scan_id);
+        const result = await postScan(body);
+        if (!result.ok) {
+          showError("Scan failed.", result.error || "The scan failed.", result.error_detail);
           return;
         }
-        let payload = null;
-        try {
-          payload = await response.json();
-        } catch (err) {
-          showError("Scan failed.", "The scan could not be reached.");
+        if (result.reports) {
+          renderBatchSummary(result);
+          const firstId = (result.reports.find((row) => row.scan_id) || {}).scan_id;
+          await loadScans(firstId);
           return;
         }
-        if (!response.ok) {
-          showError("Scan failed.", (payload && payload.error) || "The scan failed.");
-          return;
-        }
-        renderReport(payload, "Scanned just now.");
-        if (payload.scan_id) await loadScans(payload.scan_id);
+        renderReport(result.report, "Scanned just now.");
+        if (result.report.scan_id) await loadScans(result.report.scan_id);
       } catch (err) {
         showError("Scan failed.", "The scan could not be reached.");
       } finally {
@@ -1697,34 +1986,13 @@
       }
     }
 
-    const branchHelp = document.getElementById("branch-help");
     const targetHelp = document.getElementById("target-help");
     const targetHelpDefault = targetHelp.textContent;
-    let branchRequest = 0;
-    let listedBranches = [];
-    let listedTarget = "";
+    const targetRowsRoot = document.getElementById("target-rows");
+    const addTargetButton = document.getElementById("add-target");
+    let targetRows = [];
+    let nextRowId = 0;
     let pickedFolder = null;
-
-    function setBranchChoices(names, selected, help) {
-      const select = document.getElementById("branch");
-      select.replaceChildren();
-      if (!names.length) {
-        select.disabled = true;
-        select.append(line("option", "", "No branches"));
-        select.firstChild.value = "";
-        branchHelp.textContent = help || "No branches were listed.";
-        return;
-      }
-      select.disabled = false;
-      for (const name of names) {
-        const option = document.createElement("option");
-        option.value = name;
-        option.textContent = name;
-        select.append(option);
-      }
-      select.value = names.includes(selected) ? selected : names[0];
-      branchHelp.textContent = help || "Remote branches. The default is selected.";
-    }
 
     function gitTarget(value) {
       const text = value.trim();
@@ -1734,37 +2002,157 @@
       return text;
     }
 
-    async function loadBranches(prefer) {
-      const field = document.getElementById("target");
-      if (pickedFolder && field.value.trim() === pickedFolder.name) {
-        listedBranches = [];
-        listedTarget = "";
-        const select = document.getElementById("branch");
-        select.replaceChildren();
+    function shortBranchError(message) {
+      const text = String(message || "").trim();
+      if (!text) return "";
+      const lower = text.toLowerCase();
+      if (lower.includes("repository not found")) return "Repository not found.";
+      if (lower.includes("timed out")) return "Listing branches timed out.";
+      if (lower.includes("authentication failed") || lower.includes("permission denied")) {
+        return "Could not authenticate to the remote.";
+      }
+      if (lower.includes("could not resolve host")) return "Could not reach the host.";
+      const first = text.split("\n").map((line) => line.trim()).find(Boolean) || text;
+      if (first.length > 72) return first.slice(0, 72) + "…";
+      return first;
+    }
+
+    function setRowBranchError(row, message) {
+      const full = String(message || "").trim();
+      if (!full) {
+        row.branchError.textContent = "";
+        row.branchError.removeAttribute("title");
+        return;
+      }
+      const short = shortBranchError(full) || "Could not list branches.";
+      row.branchError.textContent = short;
+      if (full !== short) row.branchError.title = full;
+      else row.branchError.removeAttribute("title");
+    }
+
+    function setRowBranchChoices(row, names, selected, errorText) {
+      const select = row.branchSelect;
+      select.replaceChildren();
+      if (errorText) setRowBranchError(row, errorText);
+      else setRowBranchError(row, "");
+      if (!names.length) {
         select.disabled = true;
+        const option = line("option", "", errorText ? "Branch list failed" : "No branches");
+        option.value = "";
+        select.append(option);
+        return;
+      }
+      select.disabled = false;
+      for (const name of names) {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        select.append(option);
+      }
+      const pick = names.includes(selected)
+        ? selected
+        : (names.includes(row.defaultBranch) ? row.defaultBranch : names[0]);
+      select.value = pick;
+    }
+
+    function syncTargetControls() {
+      const folderMode = Boolean(pickedFolder);
+      addTargetButton.disabled = folderMode || targetRows.length >= MAX_TARGETS;
+      document.getElementById("browse").disabled = targetRows.length > 1;
+      for (const row of targetRows) {
+        row.removeBtn.disabled = folderMode || targetRows.length <= 1;
+      }
+    }
+
+    function removeTargetRow(rowId) {
+      if (targetRows.length <= 1) return;
+      const index = targetRows.findIndex((row) => row.id === rowId);
+      if (index < 0) return;
+      targetRows[index].tr.remove();
+      targetRows.splice(index, 1);
+      syncTargetControls();
+    }
+
+    function addTargetRow(initialTarget) {
+      if (targetRows.length >= MAX_TARGETS) return null;
+      const id = nextRowId++;
+      const tr = document.createElement("tr");
+      const urlCell = document.createElement("td");
+      const input = document.createElement("input");
+      input.type = "text";
+      input.autocomplete = "off";
+      input.value = initialTarget || "";
+      urlCell.append(input);
+      const branchCell = document.createElement("td");
+      const branchSelect = document.createElement("select");
+      branchSelect.disabled = true;
+      branchSelect.append(line("option", "", "Enter repo first"));
+      branchCell.append(branchSelect);
+      const err = line("p", "row-error", "");
+      branchCell.append(err);
+      const actionCell = document.createElement("td");
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "row-remove";
+      removeBtn.textContent = "×";
+      removeBtn.setAttribute("aria-label", "Remove repo");
+      actionCell.append(removeBtn);
+      tr.append(urlCell, branchCell, actionCell);
+      targetRowsRoot.append(tr);
+      const row = {
+        id,
+        tr,
+        input,
+        branchSelect,
+        branchError: err,
+        branchRequest: 0,
+        listedTarget: "",
+        listedBranches: [],
+        defaultBranch: "",
+        branchTimer: 0,
+        removeBtn,
+      };
+      targetRows.push(row);
+      removeBtn.addEventListener("click", () => removeTargetRow(id));
+      input.addEventListener("input", () => {
+        if (pickedFolder && input.value.trim() !== pickedFolder.name) {
+          pickedFolder = null;
+          targetHelp.textContent = targetHelpDefault;
+          syncTargetControls();
+        }
+        window.clearTimeout(row.branchTimer);
+        row.branchTimer = window.setTimeout(() => loadRowBranches(row), 400);
+      });
+      syncTargetControls();
+      if (initialTarget) loadRowBranches(row);
+      return row;
+    }
+
+    async function loadRowBranches(row, prefer) {
+      if (pickedFolder && targetRows.length === 1 && row.input.value.trim() === pickedFolder.name) {
+        row.listedBranches = [];
+        row.listedTarget = "";
+        row.branchSelect.replaceChildren();
+        row.branchSelect.disabled = true;
         const waiting = line("option", "", pickedFolder.branch || "Local folder");
         waiting.value = pickedFolder.branch || "";
-        select.append(waiting);
-        branchHelp.textContent = pickedFolder.branch
-          ? "This folder is on " + pickedFolder.branch + "."
-          : "Local folder. Branch listing is for git URLs.";
+        row.branchSelect.append(waiting);
+        setRowBranchError(row, "");
         return;
       }
-      const target = gitTarget(field.value);
-      const request = ++branchRequest;
+      const target = gitTarget(row.input.value);
+      const request = ++row.branchRequest;
       if (!/^(https?:\/\/|git@)/.test(target)) {
-        listedBranches = [];
-        listedTarget = "";
-        const select = document.getElementById("branch");
-        select.replaceChildren();
-        select.disabled = true;
-        const waiting = line("option", "", "Enter target first");
+        row.listedBranches = [];
+        row.listedTarget = "";
+        row.branchSelect.replaceChildren();
+        row.branchSelect.disabled = true;
+        const waiting = line("option", "", target ? "Local path" : "Enter repo first");
         waiting.value = "";
-        select.append(waiting);
-        branchHelp.textContent = "Branches load from the remote after a git URL.";
+        row.branchSelect.append(waiting);
+        setRowBranchError(row, "");
         return;
       }
-      branchHelp.textContent = "Listing branches…";
       try {
         const response = await fetch("/branches", {
           method: "POST",
@@ -1772,27 +2160,67 @@
           body: JSON.stringify({ target }),
         });
         const payload = await response.json();
-        if (request !== branchRequest) return;
+        if (request !== row.branchRequest) return;
         if (!response.ok) {
-          listedBranches = [];
-          listedTarget = "";
-          setBranchChoices([], "", (payload && payload.error) || "Could not list branches.");
+          row.listedBranches = [];
+          row.listedTarget = "";
+          setRowBranchChoices(row, [], "", (payload && payload.error) || "Could not list branches.");
           return;
         }
         const names = Array.isArray(payload.branches) ? payload.branches : [];
-        listedBranches = names.slice();
-        listedTarget = target;
-        const selected = prefer && names.includes(prefer) ? prefer : payload.default || "";
-        setBranchChoices(names, selected, "");
+        row.listedTarget = target;
+        row.listedBranches = names.slice();
+        row.defaultBranch = payload.default || "";
+        const preferred = prefer && names.includes(prefer) ? prefer : row.defaultBranch || "";
+        setRowBranchChoices(row, names, preferred, "");
       } catch (err) {
-        if (request !== branchRequest) return;
-        listedBranches = [];
-        listedTarget = "";
-        setBranchChoices([], "", "The branch list could not be reached.");
+        if (request !== row.branchRequest) return;
+        row.listedBranches = [];
+        row.listedTarget = "";
+        setRowBranchChoices(row, [], "", "The branch list could not be reached.");
       }
     }
 
-    let branchTimer = 0;
+    function collectTargetPayload() {
+      const out = [];
+      for (const row of targetRows) {
+        const target = gitTarget(row.input.value);
+        if (!target) continue;
+        const branch = row.branchSelect.disabled ? null : (row.branchSelect.value.trim() || null);
+        out.push({ target, branch });
+      }
+      return out;
+    }
+
+    function validateTargetRows() {
+      for (const row of targetRows) {
+        const message = row.branchError.textContent.trim();
+        if (message) return message;
+      }
+      return "";
+    }
+
+    function setRowsFromReport(data) {
+      pickedFolder = null;
+      while (targetRows.length > 1) removeTargetRow(targetRows[targetRows.length - 1].id);
+      const row = targetRows[0] || addTargetRow("");
+      row.input.value = data.target || "";
+      const normalized = gitTarget(row.input.value);
+      if (/^(https?:\/\/|git@)/.test(normalized)) {
+        loadRowBranches(row, data.branch || "");
+      } else if (data.branch) {
+        setRowBranchChoices(row, [data.branch], data.branch, "");
+      } else {
+        loadRowBranches(row);
+      }
+      syncTargetControls();
+    }
+
+    addTargetButton.addEventListener("click", () => {
+      addTargetRow("");
+    });
+
+    addTargetRow("");
     const skipDirs = new Set([
       ".git", "node_modules", "dist", "build", ".next", "__pycache__",
       ".venv", "venv", "target", "vendor", "site-packages",
@@ -1817,9 +2245,11 @@
         branch: branch || null,
         commit: commit || null,
       };
-      const input = document.getElementById("target");
-      input.value = pickedFolder.name;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
+      while (targetRows.length > 1) removeTargetRow(targetRows[targetRows.length - 1].id);
+      const row = targetRows[0] || addTargetRow("");
+      row.input.value = pickedFolder.name;
+      row.input.dispatchEvent(new Event("input", { bubbles: true }));
+      syncTargetControls();
       targetHelp.textContent = "Folder selected in the browser. Press Scan.";
     }
 
@@ -1936,15 +2366,6 @@
         targetHelp.textContent = targetHelpDefault;
         showError("Could not browse.", "That folder could not be read.");
       }
-    });
-
-    document.getElementById("target").addEventListener("input", () => {
-      if (!pickedFolder || document.getElementById("target").value.trim() !== pickedFolder.name) {
-        pickedFolder = null;
-        targetHelp.textContent = targetHelpDefault;
-      }
-      window.clearTimeout(branchTimer);
-      branchTimer = window.setTimeout(loadBranches, 400);
     });
 
     document.getElementById("setup").addEventListener("submit", (event) => {

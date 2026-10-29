@@ -1,7 +1,7 @@
 """Compare two saved scans.
 
-The same package is the ecosystem and the name. COMPARE.md records the type
-table and the two columns the page paints from `rows`.
+The same package is the ecosystem and the name. The version is what changed.
+The page paints the two columns from `rows`.
 """
 
 from __future__ import annotations
@@ -50,14 +50,19 @@ def _findings(package: dict) -> list[dict]:
         osv_id = finding.get("id")
         if not isinstance(osv_id, str) or not osv_id:
             continue
-        found.append({
+        related = finding.get("related_ids")
+        if not isinstance(related, list):
+            related = []
+        entry = {
             "id": osv_id,
             "cve": finding.get("cve") if isinstance(finding.get("cve"), str) else None,
             "severity": finding.get("severity") if isinstance(finding.get("severity"), str) else None,
             "summary": finding.get("summary") if isinstance(finding.get("summary"), str) else None,
             "fixed_in": finding.get("fixed_in") if isinstance(finding.get("fixed_in"), str) else None,
             "kind": finding.get("kind") if isinstance(finding.get("kind"), str) else None,
-        })
+            "related_ids": [str(item) for item in related if isinstance(item, str) and item],
+        }
+        found.append(entry)
     return found
 
 
@@ -77,7 +82,9 @@ def _fold(rows: list[dict]) -> dict:
     seen: dict[str, dict] = {}
     for row in rows:
         for finding in _findings(row):
-            seen.setdefault(finding["id"], finding)
+            keys = [finding["id"], *finding.get("related_ids", [])]
+            for key in keys:
+                seen.setdefault(key, finding)
     manifest = base.get("manifest")
     reason = base.get("unchecked_reason")
     return {

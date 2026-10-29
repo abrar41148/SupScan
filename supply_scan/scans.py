@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 from supply_scan.cache import default_cache_dir
 
 _ID = re.compile(r"^[a-f0-9]{32}$")
+_save_lock = threading.Lock()
 
 
 def scans_dir() -> Path:
@@ -54,17 +56,18 @@ def load_scan(scan_id: str, root: Path | None = None) -> dict | None:
 
 def save_scan(report: dict, root: Path | None = None) -> dict:
     root = scans_dir() if root is None else root
-    root.mkdir(parents=True, exist_ok=True)
-    scan_id = uuid.uuid4().hex
-    record = {
-        "id": scan_id,
-        "target": report.get("target") or "",
-        "commit": report.get("commit"),
-        "branch": report.get("branch"),
-        "saved_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-    }
-    (root / f"{scan_id}.json").write_text(json.dumps(report) + "\n", encoding="utf-8")
-    index = _read_index(root)
-    index.insert(0, record)
-    _write_index(root, index)
-    return record
+    with _save_lock:
+        root.mkdir(parents=True, exist_ok=True)
+        scan_id = uuid.uuid4().hex
+        record = {
+            "id": scan_id,
+            "target": report.get("target") or "",
+            "commit": report.get("commit"),
+            "branch": report.get("branch"),
+            "saved_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        }
+        (root / f"{scan_id}.json").write_text(json.dumps(report) + "\n", encoding="utf-8")
+        index = _read_index(root)
+        index.insert(0, record)
+        _write_index(root, index)
+        return record
