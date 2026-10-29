@@ -2490,6 +2490,115 @@ class RunScanTests(unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertIn("git URL", body["error"])
 
+    def test_scan_progress_reports_file_and_byte_rates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "requirements.txt").write_text("requests>=2\n", encoding="utf-8")
+            (root / "notes.txt").write_text("hello", encoding="utf-8")
+            (root / "node_modules").mkdir()
+            (root / "node_modules" / "skip.js").write_text("nope", encoding="utf-8")
+            (root / ".git").mkdir()
+            (root / ".git" / "config").write_text("skip", encoding="utf-8")
+            expected_bytes = (root / "requirements.txt").lstat().st_size + (root / "notes.txt").lstat().st_size
+            events = []
+            scan_tree(root, events.append)
+        counts = [event for event in events if event["phase"] == "count"]
+        reads = [event for event in events if event["phase"] == "read"]
+        self.assertTrue(counts)
+        self.assertEqual(counts[-1]["files_done"], 2)
+        self.assertEqual(counts[-1]["files_total"], 0)
+        self.assertEqual(counts[-1]["bytes_done"], expected_bytes)
+        self.assertEqual(reads[0]["files_done"], 0)
+        self.assertEqual(reads[0]["files_total"], 2)
+        self.assertEqual(reads[0]["bytes_done"], 0)
+        self.assertEqual(reads[0]["bytes_total"], expected_bytes)
+        self.assertEqual(reads[-1]["files_done"], 2)
+        self.assertEqual(reads[-1]["files_total"], 2)
+        self.assertEqual(reads[-1]["bytes_done"], expected_bytes)
+        self.assertEqual(reads[-1]["bytes_total"], expected_bytes)
+        self.assertEqual([event["files_done"] for event in reads], sorted(event["files_done"] for event in reads))
+        self.assertEqual([event["bytes_done"] for event in reads], sorted(event["bytes_done"] for event in reads))
+        self.assertLess(events.index(counts[-1]), events.index(reads[0]))
+
+    def test_scan_progress_moves_before_the_tree_is_finished(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index in range(45):
+                (root / f"file-{index}.txt").write_text("x" * (index + 1), encoding="utf-8")
+            expected_bytes = sum((root / f"file-{index}.txt").lstat().st_size for index in range(45))
+            events = []
+            scan_tree(root, events.append)
+        reads = [event for event in events if event["phase"] == "read"]
+        partial = [event for event in reads if 0 < event["files_done"] < event["files_total"]]
+        self.assertTrue(partial)
+        self.assertEqual(partial[0]["files_total"], 45)
+        self.assertLess(partial[0]["bytes_done"], partial[0]["bytes_total"])
+        self.assertEqual(reads[-1]["files_done"], 45)
+        self.assertEqual(reads[-1]["bytes_done"], expected_bytes)
+        self.assertEqual(reads[-1]["bytes_total"], expected_bytes)
+
+    def test_query_progress_counts_each_package(self):
+        packages = [
+            Package("npm", "left-pad", "1.0.0", True, False, "package.json"),
+            Package("npm", "lodash", "4.17.20", True, False, "package.json"),
+        ]
+        events = []
+
+        def fake_batch(chunk):
+            return [{"vulns": []} for _chunk in chunk]
+
+        with patch("supply_scan.match._post_batch", side_effect=fake_batch):
+            query_osv(packages, cache=NullCache(), on_progress=events.append)
+        osv = [event for event in events if event["phase"] == "osv"]
+        self.assertEqual(osv[0], {"phase": "osv", "packages_done": 0, "packages_total": 2})
+        self.assertEqual(osv[-1]["packages_done"], 2)
+        self.assertEqual(osv[-1]["packages_total"], 2)
+        self.assertEqual([event["packages_done"] for event in osv], sorted(event["packages_done"] for event in osv))
+
+    def test_progress_stream_reports_files_then_the_report(self):
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+
+        from supply_scan.serve import Handler
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        host, port = server.server_address
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "requirements.txt").write_text("requests>=2\n", encoding="utf-8")
+            Path(tmp, "notes.txt").write_text("hello", encoding="utf-8")
+            body = json.dumps({"target": tmp, "strict": False}).encode()
+            request = urllib.request.Request(
+                f"http://{host}:{port}/scan",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/x-ndjson",
+                },
+            )
+            with patch("supply_scan.serve.save_scan", return_value={"id": "stream-test"}):
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    raw = response.read().decode()
+                    content_type = response.headers.get("Content-Type", "")
+        self.assertIn("ndjson", content_type)
+        lines = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        reads = [
+            line for line in lines
+            if line["event"] == "progress" and line["phase"] == "read"
+        ]
+        self.assertTrue(reads)
+        self.assertEqual(reads[0]["files_done"], 0)
+        self.assertEqual(reads[-1]["files_done"], reads[-1]["files_total"])
+        self.assertEqual(reads[-1]["bytes_done"], reads[-1]["bytes_total"])
+        self.assertGreater(reads[-1]["bytes_total"], 0)
+        self.assertEqual(lines[-1]["event"], "result")
+        self.assertTrue(lines[-1]["ok"])
+        self.assertEqual(lines[-1]["report"]["scan_id"], "stream-test")
+        self.assertIn("packages", lines[-1]["report"])
+
 
 def _one(name, version, osv_id, **extra):
     findings = extra.pop("vulns", None)

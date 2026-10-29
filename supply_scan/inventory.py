@@ -2270,13 +2270,83 @@ def _safe(parser, manifest: str, ecosystem: str):
         return [_unchecked(ecosystem, manifest, None, False, manifest, f"could not parse {manifest}")]
 
 
-def scan_tree(root: Path) -> list[Package]:
+def _walk_dirs(dirnames: list[str]) -> None:
+    dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.lstat().st_size
+    except OSError:
+        return 0
+
+
+def _measure_tree(root: Path, on_progress) -> tuple[int, int]:
+    """Count files and bytes under root. Skipped directories match the scan walk."""
+    files = 0
+    total = 0
+    emitted = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        _walk_dirs(dirnames)
+        for name in filenames:
+            files += 1
+            total += _file_size(Path(dirpath) / name)
+            if files - emitted >= 40:
+                on_progress({
+                    "phase": "count",
+                    "files_done": files,
+                    "files_total": 0,
+                    "bytes_done": total,
+                    "bytes_total": 0,
+                })
+                emitted = files
+    if files != emitted:
+        on_progress({
+            "phase": "count",
+            "files_done": files,
+            "files_total": 0,
+            "bytes_done": total,
+            "bytes_total": 0,
+        })
+    return files, total
+
+
+def _emit_read(on_progress, files_done: int, files_total: int, bytes_done: int, bytes_total: int) -> None:
+    if files_done > files_total:
+        files_total = files_done
+    if bytes_done > bytes_total:
+        bytes_total = bytes_done
+    on_progress({
+        "phase": "read",
+        "files_done": files_done,
+        "files_total": files_total,
+        "bytes_done": bytes_done,
+        "bytes_total": bytes_total,
+    })
+
+
+def scan_tree(root: Path, on_progress=None) -> list[Package]:
     root = root.resolve()
+    files_total = 0
+    bytes_total = 0
+    if on_progress is not None:
+        files_total, bytes_total = _measure_tree(root, on_progress)
+        _emit_read(on_progress, 0, files_total, 0, bytes_total)
+    files_done = 0
+    bytes_done = 0
     entries: list[tuple[Path, set[str], Path]] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
+        _walk_dirs(dirnames)
+        if on_progress is not None:
+            for name in filenames:
+                files_done += 1
+                bytes_done += _file_size(Path(dirpath) / name)
+                if files_done == files_total or files_done % 40 == 0:
+                    _emit_read(on_progress, files_done, files_total, bytes_done, bytes_total)
         directory = Path(dirpath).relative_to(root)
         entries.append((directory, set(filenames), Path(dirpath)))
+    if on_progress is not None:
+        _emit_read(on_progress, files_done, files_done, bytes_done, bytes_done)
 
     npm_locks = {
         directory for directory, names, _path in entries

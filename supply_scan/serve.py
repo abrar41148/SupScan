@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import socket
 import tempfile
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -135,7 +137,7 @@ def _picked_commit(value: object) -> str | None:
     return text
 
 
-def _picked_folder(payload: dict) -> tuple[int, dict]:
+def _picked_folder(payload: dict, on_progress=None) -> tuple[int, dict]:
     """Scan the lockfiles the browser read from its own folder window.
 
     A dialog opened by this process is a separate Python window, and Cancel
@@ -173,6 +175,7 @@ def _picked_folder(payload: dict) -> tuple[int, dict]:
                 _picked_commit(payload.get("commit")),
                 bool(payload.get("strict")),
                 use_cache=True,
+                on_progress=on_progress,
             )
         except (AcquireError, MatchError) as exc:
             return 400, {"error": str(exc)}
@@ -180,9 +183,9 @@ def _picked_folder(payload: dict) -> tuple[int, dict]:
         delete_tree(root)
 
 
-def scan_response(payload: dict) -> tuple[int, dict]:
+def scan_response(payload: dict, on_progress=None) -> tuple[int, dict]:
     if isinstance(payload, dict) and "files" in payload:
-        return _picked_folder(payload)
+        return _picked_folder(payload, on_progress)
     target = payload.get("target")
     target = target.strip() if isinstance(target, str) else ""
     if not target:
@@ -194,7 +197,7 @@ def scan_response(payload: dict) -> tuple[int, dict]:
         branch = branch.strip()
     strict = bool(payload.get("strict"))
     try:
-        return 200, run_scan(target, branch, strict, use_cache=True)
+        return 200, run_scan(target, branch, strict, use_cache=True, on_progress=on_progress)
     except (AcquireError, MatchError) as exc:
         return 400, {"error": str(exc)}
 
@@ -243,12 +246,80 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/compare":
             status, body = compare_response(payload)
         else:
+            accept = self.headers.get("Accept", "")
+            if "application/x-ndjson" in accept:
+                self._stream_scan(payload)
+                return
             status, body = scan_response(payload)
             if status == 200:
                 saved = save_scan(body)
                 body = dict(body)
                 body["scan_id"] = saved["id"]
         self._send(status, body)
+
+    def _stream_scan(self, payload: dict) -> None:
+        """Chunked progress events, then one result. Each event is written to the socket as it happens."""
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+        self.close_connection = True
+        self.protocol_version = "HTTP/1.1"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.flush()
+        except OSError:
+            return
+        failed = False
+        lock = threading.Lock()
+
+        def send(obj: dict) -> None:
+            nonlocal failed
+            if failed:
+                return
+            raw = (json.dumps(obj) + "\n").encode("utf-8")
+            packet = f"{len(raw):x}\r\n".encode("ascii") + raw + b"\r\n"
+            with lock:
+                if failed:
+                    return
+                try:
+                    self.connection.sendall(packet)
+                except OSError:
+                    failed = True
+
+        def send_tail() -> None:
+            if failed:
+                return
+            try:
+                self.connection.sendall(b"0\r\n\r\n")
+            except OSError:
+                return
+
+        try:
+            status, body = scan_response(payload, on_progress=lambda event: send({"event": "progress", **event}))
+        except Exception:
+            send({"event": "result", "ok": False, "error": "The scan failed."})
+            send_tail()
+            return
+        if status != 200:
+            send({"event": "result", "ok": False, "error": body.get("error") or "The scan failed."})
+            send_tail()
+            return
+        try:
+            saved = save_scan(body)
+        except Exception:
+            send({"event": "result", "ok": False, "error": "The scan could not be saved."})
+            send_tail()
+            return
+        report = dict(body)
+        report["scan_id"] = saved["id"]
+        send({"event": "result", "ok": True, "report": report})
+        send_tail()
 
     def _read_json(self, limit: int = MAX_BODY) -> tuple[dict | None, str | None]:
         try:

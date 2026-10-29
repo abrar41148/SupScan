@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -348,12 +349,32 @@ def _post_batch(chunk: list[Package]) -> list[dict]:
     return batch
 
 
-def query_osv(packages: list[Package], cache: DiskCache | NullCache | None = None) -> None:
+def query_osv(
+    packages: list[Package],
+    cache: DiskCache | NullCache | None = None,
+    on_progress=None,
+) -> None:
     targets = [package for package in packages if not package.unchecked_reason and package.version]
     if not targets:
         return
     if cache is None:
         cache = DiskCache(default_cache_dir())
+    total = len(targets)
+    done = 0
+
+    def emit_packages() -> None:
+        if on_progress is None:
+            return
+        if done != total and done != 1 and done % 20 != 0:
+            return
+        on_progress({
+            "phase": "osv",
+            "packages_done": done,
+            "packages_total": total,
+        })
+
+    if on_progress is not None:
+        on_progress({"phase": "osv", "packages_done": 0, "packages_total": total})
     results: list[dict | None] = [None] * len(targets)
     missing: list[int] = []
     for index, package in enumerate(targets):
@@ -362,6 +383,8 @@ def query_osv(packages: list[Package], cache: DiskCache | NullCache | None = Non
             missing.append(index)
         else:
             results[index] = hit
+            done += 1
+            emit_packages()
     for start in range(0, len(missing), BATCH_SIZE):
         indexes = missing[start:start + BATCH_SIZE]
         chunk = [targets[index] for index in indexes]
@@ -369,16 +392,45 @@ def query_osv(packages: list[Package], cache: DiskCache | NullCache | None = Non
             package = targets[index]
             cache.put_query(package.ecosystem, package.name, package.version or "", result)
             results[index] = result
-
-    def fetch(osv_id: str) -> dict:
-        cached = cache.get_advisory(osv_id)
-        if cached is not None:
-            return cached
-        body = _fetch_vuln(osv_id)
-        cache.put_advisory(osv_id, body)
-        return body
+            done += 1
+            emit_packages()
 
     filled = [result or {"vulns": []} for result in results]
+    needed: list[str] = []
+    for result in filled:
+        for vuln in (result or {}).get("vulns") or []:
+            if vuln.get("id") and not vuln.get("affected"):
+                needed.append(str(vuln["id"]))
+    advisory_total = len(list(dict.fromkeys(needed)))
+    advisory_done = 0
+    advisory_lock = threading.Lock()
+
+    def fetch(osv_id: str) -> dict:
+        nonlocal advisory_done
+        cached = cache.get_advisory(osv_id)
+        if cached is not None:
+            body = cached
+        else:
+            body = _fetch_vuln(osv_id)
+            cache.put_advisory(osv_id, body)
+        if on_progress is not None and advisory_total:
+            with advisory_lock:
+                advisory_done += 1
+                current = advisory_done
+                if current == advisory_total or current == 1 or current % 5 == 0:
+                    on_progress({
+                        "phase": "advisories",
+                        "advisories_done": current,
+                        "advisories_total": advisory_total,
+                    })
+        return body
+
+    if on_progress is not None and advisory_total:
+        on_progress({
+            "phase": "advisories",
+            "advisories_done": 0,
+            "advisories_total": advisory_total,
+        })
     print(
         f"osv: {len(targets) - len(missing)} cached, {len(missing)} fetched",
         file=sys.stderr,

@@ -3,4 +3,4 @@ __pycache__/
 .venv/
 supply-scan-report.json
 supply-scan-report.html
-*.md
+deliverables/
