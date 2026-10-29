@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import tempfile
+import zipfile
 import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -11,7 +12,11 @@ from unittest.mock import patch
 
 from supply_scan.acquire import (
     AcquireError,
+    build_clone_command,
+    build_clone_environment,
+    clone_git_config_args,
     delete_tree,
+    materialize_scan_manifests,
     normalize_target,
     open_workspace,
     parse_remote_heads,
@@ -21,15 +26,16 @@ from supply_scan.inventory import Package, dedupe, scan_tree
 from supply_scan.cache import DiskCache, NullCache
 import supply_scan.match as match
 from supply_scan.match import Finding, annotate, cvss_v3_score, hydrate, query_osv, range_contains, version_tuple
+from supply_scan.osv_zip import read_advisory_from_zip
 from supply_scan.cli import main
 from supply_scan.compare import compare_reports
-from supply_scan.scans import load_scan, save_scan
+from supply_scan.scans import list_scans, load_scan, save_scan
 from supply_scan.serve import compare_response
 from supply_scan.ignore import read_ignores, set_ignored
 from supply_scan.report import Snapshot, exit_code, render_json, render_text
 from supply_scan.serve import ignore_response
-from supply_scan.run import run_scan
-from supply_scan.serve import branches_response, scan_response
+from supply_scan.run import TargetSpec, run_batch, run_scan
+from supply_scan.serve import _branch_list_error, batch_scan_response, branches_response, scan_response
 
 
 CRITICAL = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
@@ -752,7 +758,7 @@ __metadata:
         self.assertNotIn("portal", sent)
         self.assertNotIn("patched", sent)
 
-    def test_yarn_lock_yields_to_the_other_javascript_locks(self):
+    def test_yarn_lock_is_read_alongside_other_javascript_locks(self):
         yarn = """
 # yarn lockfile v1
 
@@ -768,19 +774,24 @@ lodash@^4.17.21:
                 encoding="utf-8",
             )
             found = {pkg.name: pkg for pkg in scan_tree(root)}
-        self.assertEqual(set(found), {"left-pad"})
+        self.assertEqual(set(found), {"left-pad", "lodash"})
         self.assertEqual(found["left-pad"].version, "1.2.3")
         self.assertEqual(found["left-pad"].manifest, "package-lock.json")
+        self.assertEqual(found["lodash"].version, "4.17.21")
+        self.assertEqual(found["lodash"].manifest, "yarn.lock")
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "yarn.lock").write_text(yarn, encoding="utf-8")
             (root / "pnpm-lock.yaml").write_text(PNPM, encoding="utf-8")
-            found = {pkg.name: pkg for pkg in scan_tree(root)}
-        self.assertIn("vitest", found)
-        self.assertNotIn("4.17.21", {pkg.version for pkg in found.values()})
-        self.assertEqual(found["lodash"].manifest, "pnpm-lock.yaml")
-        self.assertEqual(found["lodash"].version, "4.17.20")
+            packages = scan_tree(root)
+            by_name: dict[str, list[Package]] = {}
+            for pkg in packages:
+                by_name.setdefault(pkg.name, []).append(pkg)
+        self.assertIn("vitest", by_name)
+        lodash = sorted(by_name["lodash"], key=lambda pkg: pkg.version or "")
+        self.assertEqual([pkg.version for pkg in lodash], ["4.17.20", "4.17.21"])
+        self.assertEqual({pkg.manifest for pkg in lodash}, {"pnpm-lock.yaml", "yarn.lock"})
 
     def test_yarn_lock_unknown_shape_is_one_unchecked_row(self):
         texts = (
@@ -1799,6 +1810,20 @@ end
         self.assertFalse(merged[0].dev)
 
 
+class OsvZipTests(unittest.TestCase):
+    def test_read_advisory_from_cached_zip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = DiskCache(Path(tmp), ttl_seconds=3600)
+            zip_path = cache.root / "osv-zips" / "npm" / "all.zip"
+            zip_path.parent.mkdir(parents=True)
+            payload = {"id": "GHSA-test", "summary": "from zip"}
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("GHSA-test.json", json.dumps(payload))
+            body = read_advisory_from_zip("GHSA-test", "npm", cache)
+            self.assertEqual(body, payload)
+            self.assertIsNone(read_advisory_from_zip("GHSA-missing", "npm", cache))
+
+
 class MatchTests(unittest.TestCase):
     def test_cvss_critical_vector(self):
         self.assertEqual(cvss_v3_score(CRITICAL), 9.8)
@@ -1814,6 +1839,39 @@ class MatchTests(unittest.TestCase):
         self.assertFalse(range_contains("1.3.0", events))
         self.assertTrue(range_contains("1.4.1", events))
         self.assertFalse(range_contains("1.4.2", events))
+
+    def test_local_range_can_drop_api_hit(self):
+        package = Package("npm", "lodash", "1.0.0", True, False, "package-lock.json")
+        annotate([package], [{
+            "vulns": [_advisory("4.17.21", events=[{"introduced": "0"}, {"fixed": "1"}])],
+        }])
+        self.assertEqual(package.vulns, [])
+
+    def test_alias_records_group_to_one_finding(self):
+        package = Package("npm", "lodash", "4.17.20", True, False, "package-lock.json")
+        ghsa = _advisory("4.17.21", osv_id="GHSA-1", cve="CVE-2021-1")
+        ghsa["aliases"] = ["CVE-2021-1", "OSV-1"]
+        duplicate = _advisory("4.17.21", osv_id="OSV-1", cve=None)
+        duplicate["aliases"] = ["GHSA-1", "CVE-2021-1"]
+        annotate([package], [{"vulns": [ghsa, duplicate]}])
+        self.assertEqual(len(package.vulns), 1)
+        self.assertEqual(package.vulns[0].osv_id, "GHSA-1")
+        self.assertIn("OSV-1", package.vulns[0].related_ids)
+
+    def test_range_unsorted_events(self):
+        events = [
+            {"introduced": "0"},
+            {"introduced": "2.1.0"},
+            {"fixed": "1"},
+            {"last_affected": "3.1.9"},
+        ]
+        for version, affected in (
+            ("1.0.0", False),
+            ("2.0.1", False),
+            ("3.1.9", True),
+            ("3.2.0", False),
+        ):
+            self.assertEqual(range_contains(version, events), affected, version)
 
     def test_recommend_is_the_highest_fix(self):
         package = Package("npm", "lodash", "4.17.20", True, False, "package-lock.json")
@@ -2069,7 +2127,7 @@ class AcquireTests(unittest.TestCase):
         with patch("supply_scan.serve.list_remote_branches", return_value=(["main"], "main")) as listed:
             code, body = branches_response({"target": "github.com/org/repo"})
         self.assertEqual(code, 200)
-        listed.assert_called_once_with("https://github.com/org/repo")
+        listed.assert_called_once_with("https://github.com/org/repo", None)
         self.assertEqual(body["default"], "main")
 
     def test_picked_folder_is_scanned_in_the_browser(self):
@@ -2333,6 +2391,96 @@ com.google.guava:failureaccess:1.0.1=runtimeClasspath
         )
         with self.assertRaises(AcquireError):
             sanitize_git_url("https://github.com/org/repo.git && calc.exe")
+
+    def test_clone_command_uses_no_checkout_and_hardening(self):
+        target = Path("C:/temp/supply-scan-repos/demo_ab12cd34")
+        cmd = build_clone_command("https://github.com/org/repo.git", target, "main")
+        self.assertIn("--no-checkout", cmd)
+        self.assertIn("--depth", cmd)
+        self.assertEqual(cmd[cmd.index("--depth") + 1], "1")
+        for flag in clone_git_config_args():
+            self.assertIn(flag, cmd)
+        self.assertIn("-b", cmd)
+        self.assertEqual(cmd[cmd.index("-b") + 1], "main")
+        env = build_clone_environment()
+        self.assertNotIn("GIT_CONFIG_NOSYSTEM", env)
+        self.assertNotIn("GIT_TERMINAL_PROMPT", env)
+        self.assertNotIn("credential.helper=", " ".join(cmd))
+
+    def test_partial_manifest_tree_matches_a_full_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Path(root, "package-lock.json").write_text(json.dumps(LOCK), encoding="utf-8")
+            Path(root, "packages", "app").mkdir(parents=True)
+            Path(root, "packages", "app", "package.json").write_text(
+                json.dumps({"dependencies": {"express": "^4.18.0"}}),
+                encoding="utf-8",
+            )
+            full = scan_tree(root)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Path(root, "package-lock.json").write_text(json.dumps(LOCK), encoding="utf-8")
+            Path(root, "packages", "app").mkdir(parents=True)
+            Path(root, "packages", "app", "package.json").write_text(
+                json.dumps({"dependencies": {"express": "^4.18.0"}}),
+                encoding="utf-8",
+            )
+            partial = scan_tree(root)
+
+        def key(pkg):
+            return (
+                pkg.ecosystem,
+                pkg.name,
+                pkg.version,
+                pkg.direct,
+                pkg.dev,
+                pkg.manifest,
+                pkg.unchecked_reason,
+            )
+
+        self.assertEqual(sorted(key(p) for p in full), sorted(key(p) for p in partial))
+
+    def test_no_checkout_clone_materializes_manifests(self):
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            origin = Path(tmp) / "origin"
+            origin.mkdir()
+            (origin / "go.mod").write_text(GO_MOD, encoding="utf-8")
+            (origin / "readme.txt").write_text("not a manifest", encoding="utf-8")
+            git_env = {
+                **os.environ,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_TERMINAL_PROMPT": "0",
+            }
+            subprocess.run(["git", "init"], cwd=origin, check=True, env=git_env)
+            subprocess.run(
+                ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "add", "."],
+                cwd=origin,
+                check=True,
+                env=git_env,
+            )
+            subprocess.run(
+                ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-m", "init"],
+                cwd=origin,
+                check=True,
+                env=git_env,
+            )
+
+            clone_dir = Path(tmp) / "clone"
+            subprocess.run(
+                ["git", "clone", "--no-checkout", str(origin), str(clone_dir)],
+                check=True,
+                env=git_env,
+            )
+            self.assertFalse((clone_dir / "readme.txt").exists())
+            materialize_scan_manifests(clone_dir)
+            self.assertTrue((clone_dir / "go.mod").exists())
+            self.assertFalse((clone_dir / "readme.txt").exists())
+            found = scan_tree(clone_dir)
+            self.assertEqual(found[0].ecosystem, "Go")
 
     def test_local_directory_is_not_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2779,6 +2927,191 @@ class CompareTests(unittest.TestCase):
                 ("GHSA-old", "cleared"),
                 ("GHSA-stay", "still"),
             ])
+
+
+class GitTokenTests(unittest.TestCase):
+    def test_git_auth_config_uses_http_extra_header(self):
+        import os
+
+        from supply_scan.acquire import build_clone_command
+        from supply_scan.git_pat_auth import git_auth_config_args
+
+        args = git_auth_config_args("ghp_test_token")
+        self.assertEqual(len(args), 2)
+        self.assertEqual(args[0], "-c")
+        self.assertTrue(args[1].startswith("http.extraHeader=Authorization: Basic "))
+        self.assertNotIn("ghp_test_token", args[1])
+        cmd = build_clone_command(
+            "https://github.com/org/repo.git",
+            Path("C:/temp/repo"),
+            "main",
+            "ghp_test_token",
+        )
+        self.assertEqual(cmd[0], "git")
+        self.assertIn("clone", cmd)
+        if os.name == "nt":
+            clone_url = cmd[-2]
+            self.assertIn("x-access-token:", clone_url)
+            self.assertIn("@github.com/org/repo.git", clone_url)
+            self.assertFalse(any("http.extraHeader=Authorization: Basic" in part for part in cmd))
+        else:
+            joined = " ".join(cmd)
+            self.assertNotIn("ghp_test_token", joined)
+            self.assertTrue(any("http.extraHeader=Authorization: Basic" in part for part in cmd))
+            self.assertIn("https://github.com/org/repo.git", cmd)
+
+    def test_pat_clone_url_on_windows(self):
+        import os
+
+        if os.name != "nt":
+            self.skipTest("Windows PAT URL embedding")
+
+        from supply_scan.acquire import build_clone_command
+
+        cmd = build_clone_command(
+            "https://github.com/org/repo.git",
+            Path("C:/temp/repo"),
+            "main",
+            "ghp_not_a_real_token",
+        )
+        clone_url = cmd[-2]
+        self.assertIn("x-access-token:", clone_url)
+
+
+class AcquireErrorTextTests(unittest.TestCase):
+    def test_https_credential_prompt_becomes_a_short_sentence(self):
+        detail = (
+            "Cloning into 'C:\\\\Temp\\\\repo'...\n"
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled"
+        )
+        from supply_scan.acquire import short_acquire_error
+
+        self.assertEqual(
+            short_acquire_error(detail),
+            "Private repository or HTTPS credentials required.",
+        )
+
+
+class BranchListErrorTests(unittest.TestCase):
+    def test_long_git_stderr_becomes_a_short_sentence(self):
+        detail = (
+            "remote: Repository not found.\n"
+            "fatal: repository 'https://github.com/example/missing/' not found"
+        )
+        self.assertEqual(_branch_list_error(detail), "Repository not found.")
+
+
+class BatchServeTests(unittest.TestCase):
+    def test_batch_scan_response_returns_aggregate_exit_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            one = base / "one"
+            two = base / "two"
+            for tree, name in ((one, "left-pad"), (two, "lodash")):
+                tree.mkdir()
+                Path(tree, "package.json").write_text(
+                    json.dumps({"dependencies": {name: "1.0.0"}}),
+                    encoding="utf-8",
+                )
+
+            def fake_batch(chunk):
+                return [{"vulns": []} for _ in chunk]
+
+            with patch("supply_scan.match._post_batch", side_effect=fake_batch):
+                code, body = batch_scan_response({
+                    "targets": [{"target": str(one)}, {"target": str(two)}],
+                    "strict": False,
+                })
+            self.assertEqual(code, 200)
+            self.assertEqual(body["exit_code"], 0)
+            self.assertEqual(len(body["reports"]), 2)
+            self.assertEqual(body["reports"][0]["exit_code"], 0)
+
+
+class BatchScanTests(unittest.TestCase):
+    def _npm_tree(self, root: Path, name: str, version: str) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        root.joinpath("package.json").write_text(
+            json.dumps({"dependencies": {name: version}}),
+            encoding="utf-8",
+        )
+
+    def test_shared_osv_version_is_fetched_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            one = base / "one"
+            two = base / "two"
+            three = base / "three"
+            self._npm_tree(one, "lodash", "4.17.21")
+            self._npm_tree(two, "lodash", "4.17.21")
+            self._npm_tree(three, "express", "4.18.2")
+            seen: list[tuple[str, str, str]] = []
+
+            def fake_batch(chunk):
+                for package in chunk:
+                    seen.append((package.ecosystem, package.name, package.version or ""))
+                return [{"vulns": []} for _ in chunk]
+
+            with patch("supply_scan.match._post_batch", side_effect=fake_batch):
+                status, reports, _snapshots = run_batch(
+                    [TargetSpec(str(one)), TargetSpec(str(two)), TargetSpec(str(three))],
+                    use_cache=False,
+                )
+            self.assertEqual(status, 0)
+            self.assertEqual(len(reports), 3)
+            self.assertEqual(seen.count(("npm", "lodash", "4.17.21")), 1)
+            self.assertIn(("npm", "express", "4.18.2"), seen)
+
+    def test_failed_target_still_finishes_others(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            good_a = base / "good-a"
+            missing = base / "missing"
+            good_b = base / "good-b"
+            self._npm_tree(good_a, "left-pad", "1.0.0")
+            self._npm_tree(good_b, "left-pad", "1.0.1")
+
+            def fake_batch(chunk):
+                return [{"vulns": []} for _ in chunk]
+
+            with patch("supply_scan.match._post_batch", side_effect=fake_batch):
+                status, reports, _snapshots = run_batch(
+                    [TargetSpec(str(good_a)), TargetSpec(str(missing)), TargetSpec(str(good_b))],
+                    use_cache=False,
+                )
+            self.assertEqual(status, 2)
+            self.assertEqual(reports[0]["exit_code"], 0)
+            self.assertEqual(reports[1]["exit_code"], 2)
+            self.assertEqual(reports[2]["exit_code"], 0)
+            self.assertIn("error", reports[1])
+            self.assertGreater(len(reports[0]["packages"]), 0)
+            self.assertGreater(len(reports[2]["packages"]), 0)
+
+    def test_concurrent_save_scan_keeps_both_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            barrier = threading.Barrier(2)
+
+            def save_one(label: str) -> dict:
+                barrier.wait(timeout=5)
+                with patch("supply_scan.scans.scans_dir", return_value=root):
+                    return save_scan({"target": label, "packages": []})
+
+            results: list[dict] = []
+
+            def worker(label: str) -> None:
+                results.append(save_one(label))
+
+            threads = [threading.Thread(target=worker, args=(f"repo-{index}",)) for index in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+            with patch("supply_scan.scans.scans_dir", return_value=root):
+                index = list_scans(root)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(len(index), 2)
+            self.assertEqual(len({row["id"] for row in index}), 2)
 
 
 def _finding(osv_id, severity="high", kind="vulnerability"):

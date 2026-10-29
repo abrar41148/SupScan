@@ -20,6 +20,45 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Basenames scan_tree reads. Compared case-insensitively except where the walk
+# uses an exact name (Gemfile.lock); git paths are matched on lower case here.
+SCAN_MANIFEST_NAMES = frozenset({
+    "cargo.toml",
+    "cargo.lock",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "package.json",
+    "go.mod",
+    "composer.lock",
+    "composer.json",
+    "pubspec.lock",
+    "pubspec.yaml",
+    "gemfile.lock",
+    "gemfile",
+    "gradle.lockfile",
+    "libs.versions.toml",
+    "pom.xml",
+    "uv.lock",
+    "poetry.lock",
+    "pyproject.toml",
+})
+
+
+def is_scan_manifest_relpath(relpath: str) -> bool:
+    """True when path is a manifest file scan_tree may read."""
+    text = relpath.replace("\\", "/").strip()
+    if not text or text.startswith("/"):
+        return False
+    parts = [part for part in text.split("/") if part]
+    if not parts or any(part in (".", "..") for part in parts):
+        return False
+    name = parts[-1].lower()
+    if name in SCAN_MANIFEST_NAMES:
+        return True
+    return name.startswith("requirements") and name.endswith(".txt")
+
+
 SKIP_DIRS = {
     ".git",
     "node_modules",
@@ -2386,10 +2425,10 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
         if "package-lock.json" in names:
             manifest = _rel(directory, "package-lock.json")
             found.extend(_safe(lambda p=path, m=manifest: parse_package_lock(_read(p / "package-lock.json"), m), manifest, "npm"))
-        elif "pnpm-lock.yaml" in names:
+        if "pnpm-lock.yaml" in names:
             manifest = _rel(directory, "pnpm-lock.yaml")
             found.extend(_safe(lambda p=path, m=manifest: parse_pnpm_lock(_read(p / "pnpm-lock.yaml"), m), manifest, "npm"))
-        elif "yarn.lock" in names:
+        if "yarn.lock" in names:
             manifest = _rel(directory, "yarn.lock")
             jsons = yarn_jsons.get(directory, [])
             found.extend(_safe(
@@ -2397,7 +2436,7 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
                 manifest,
                 "npm",
             ))
-        elif "package.json" in names and _nearest(directory, npm_locks) is None:
+        if "package.json" in names and _nearest(directory, npm_locks) is None:
             manifest = _rel(directory, "package.json")
             found.extend(_safe(lambda p=path, m=manifest: parse_package_json(_read(p / "package.json"), m), manifest, "npm"))
 

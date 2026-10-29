@@ -88,9 +88,10 @@ A target is a git URL when it starts with `http://`, `https://`, or `git@`. Anyt
 URL flow:
 
 1. `sanitize_git_url` rejects strings that do not match the allowlist regex.
-2. `git clone --depth 1` into `%TEMP%\supply-scan-repos\{name}_{id}`. `--branch` adds `-b`.
-3. `git rev-parse HEAD` and `git branch --show-current` fill `commit` and `branch`. If those commands fail, the fields stay `None` and the scan continues.
-4. On the way out, `delete_tree` removes the clone.
+2. `git clone --depth 1 --no-checkout` into `%TEMP%\supply-scan-repos\{name}_{id}`. `--branch` adds `-b`. The clone runs with `GIT_CONFIG_NOSYSTEM=1`, an empty `GIT_CONFIG_GLOBAL`, `GIT_TERMINAL_PROMPT=0`, and `-c submodule.recurse=false`, `-c credential.helper=`, `-c protocol.file.allow=never`.
+3. `git ls-tree -r HEAD` lists blobs. Manifest paths that `scan_tree` reads are written into the work tree with `git cat-file blob` (including parent `pom.xml` files when a child pom needs them). Symlinks and submodule gitlinks are skipped. More than 2000 manifests, one file over 16 MB, or more than 48 MB total fails the clone.
+4. `git rev-parse HEAD` and `git branch --show-current` fill `commit` and `branch`. If those commands fail, the fields stay `None` and the scan continues.
+5. On the way out, `delete_tree` removes the clone.
 
 Local flow: resolve the path, read the same git identity if the directory is a repo, yield it, do not delete it. `--branch` is stored on the workspace but does not check out a different branch of a local directory.
 

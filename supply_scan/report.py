@@ -101,7 +101,10 @@ def render_text(snapshot: Snapshot) -> str:
                 lines.append(f"  {finding.osv_id}  malware  {finding.severity}")
             else:
                 cve = f"  {finding.cve}" if finding.cve else ""
-                lines.append(f"  {finding.osv_id}{cve}  {finding.severity}")
+                also = ""
+                if finding.related_ids:
+                    also = f"  (also {' '.join(finding.related_ids)})"
+                lines.append(f"  {finding.osv_id}{cve}{also}  {finding.severity}")
             if finding.summary:
                 lines.append(f"  {finding.summary}")
             if finding.fixed_in:
@@ -146,6 +149,7 @@ def _package_dict(package: Package) -> dict:
                 "summary": finding.summary,
                 "fixed_in": finding.fixed_in,
                 "kind": finding.kind,
+                **({"related_ids": list(finding.related_ids)} if finding.related_ids else {}),
             }
             for finding in package.vulns
         ],
@@ -181,6 +185,14 @@ def render_html(snapshot: Snapshot) -> str:
         "background:#111;color:#eee}pre{white-space:pre-wrap}</style>"
         f"</head><body><pre>{body}</pre></body></html>\n"
     )
+
+
+def worst_exit_code(codes: list[int]) -> int:
+    if 2 in codes:
+        return 2
+    if 1 in codes:
+        return 1
+    return 0
 
 
 def exit_code(packages: list[Package], strict: bool) -> int:

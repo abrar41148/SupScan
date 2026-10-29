@@ -20,6 +20,7 @@ python -m supply_scan <git-url-or-local-path> --branch NAME
 python -m supply_scan <git-url-or-local-path> --strict
 python -m supply_scan <git-url-or-local-path> --html
 python -m supply_scan <git-url-or-local-path> --no-cache
+python -m supply_scan <git-url-or-local-path> --zip-advisories
 python -m supply_scan <git-url-or-local-path> --json report.json
 ```
 
@@ -56,8 +57,12 @@ The suite does not call the network. Three cases used for the written hand-in, a
 ## Limitations
 
 - Versions are taken from lockfiles and from literals written in the repo. The tool does not run npm, pip, Cargo, Go, Composer, Bundler, pub, Gradle, or Maven. A range with no lock stays unchecked and is not sent to OSV.
-- Vulnerability data comes from OSV. Answers are reused for 24 hours. `--no-cache` asks again. There is no offline advisory database.
+- Vulnerability data comes from OSV. Answers are reused for 24 hours. `--no-cache` asks again. Optional: `--zip-advisories` (or `SUPPLY_SCAN_ZIP_ADVISORIES=1`) loads full advisories from OSV’s per-ecosystem `all.zip` in the cache when hydrating batch stubs (batch queries still use the network).
 - The scan does not decide whether the vulnerable function is called, and it does not open an upgrade pull request.
 - The page listens on loopback only.
 
 A short map of the course hand-in (report, slides, test evidence, security outcome) is in [submission/README.md](submission/README.md).
+
+## OSV-Scanner comparison
+
+Side-by-side notes vs Google’s [OSV-Scanner](https://github.com/google/osv-scanner) are **complete** for the scope described there: [OSV-SCANNER.md](OSV-SCANNER.md) (product and matcher) and [OSV-COMPARISON-HANDOFF.md](OSV-COMPARISON-HANDOFF.md) (fixture runs and clone pins). Re-run locally with `compare_reports.py` and `compare-empty.toml` if you refresh the local `osv-scanner` clone.
