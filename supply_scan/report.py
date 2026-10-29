@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from dataclasses import dataclass
 
 from supply_scan.inventory import Package
@@ -43,6 +44,30 @@ def _package_line(package: Package) -> str:
     if package.alias:
         line += f"  as {package.alias}"
     return line
+
+
+def unrecognised_names(packages: list[Package]) -> list[str]:
+    """Property names from a pom that did not resolve to a version written in the repo."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for package in packages:
+        if not package.unchecked_reason:
+            continue
+        manifest = package.manifest.replace("\\", "/").lower()
+        if not manifest.endswith("pom.xml"):
+            continue
+        tokens: list[str] = []
+        for source in (package.version, package.name):
+            if source:
+                tokens.extend(part.strip() for part in re.findall(r"\$\{([^{}]+)\}", source))
+        if package.alias:
+            tokens.extend(part.strip() for part in package.alias.split(", ") if part.strip())
+        for token in tokens:
+            if token and token not in seen:
+                seen.add(token)
+                found.append(token)
+    found.sort()
+    return found
 
 
 def _finding_key(finding: Finding) -> tuple:
@@ -93,6 +118,12 @@ def render_text(snapshot: Snapshot) -> str:
             lines.append(f"  {_package_line(package)}")
             lines.append(f"  {package.unchecked_reason}")
         lines.append("")
+    names = unrecognised_names(snapshot.packages)
+    if names:
+        lines.append("unrecognised names:")
+        for name in names:
+            lines.append(f"  {name}")
+        lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -133,6 +164,7 @@ def render_json(snapshot: Snapshot) -> str:
             "vulnerable": vulnerable,
             "unchecked": unchecked,
         },
+        "unrecognised_names": unrecognised_names(snapshot.packages),
         "packages": [_package_dict(package) for package in snapshot.packages],
     }
     return json.dumps(payload, indent=2) + "\n"

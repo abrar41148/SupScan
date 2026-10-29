@@ -6,14 +6,19 @@ flowchart TD
     Pnpm --> GoReplace["Mark a Go replace as unchecked"]
     GoReplace --> Cargo["Look up the real crates.io name"]
     Cargo --> Screen["Ignore list and scan comparison, on a screen"]
-    Cargo --> Parked["Leave Yarn, Java, Ruby, PHP, richer version sorting, direct-only, and offline listing"]
+    Screen --> Composer["Read composer.lock"]
+    Composer --> Pub["Read pubspec.lock"]
+    Pub --> Ruby["Read Gemfile.lock"]
+    Ruby --> Yarn["Read yarn.lock after the other JavaScript locks"]
+    Yarn --> Gradle["Read a Gradle lock or version catalog"]
+    Gradle --> Maven["Read literal versions in pom.xml"]
+    Maven --> VersionSort["Sort a pre-release the way its package manager does"]
+    VersionSort --> Parked["Leave direct-only and offline listing"]
 
     classDef done fill:#90EE90,stroke:#333,stroke-width:2px,color:darkgreen
     classDef next fill:#87CEEB,stroke:#333,stroke-width:2px,color:darkblue
     classDef later fill:#E6E6FA,stroke:#333,stroke-width:2px,color:darkblue
     classDef parked fill:#FFD700,stroke:#333,stroke-width:2px,color:black
 
-    class Start,Cache,Npm,Hydrate,GoReplace,Cargo done
-    class Pnpm next
-    class Screen later
+    class Start,Cache,Npm,Hydrate,Pnpm,GoReplace,Cargo,Screen,Composer,Pub,Ruby,Yarn,Gradle,Maven,VersionSort done
     class Parked parked

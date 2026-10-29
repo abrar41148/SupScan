@@ -42,9 +42,30 @@ class Workspace:
     branch: str | None
 
 
+_SCHEMELESS_RE = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?$")
+
+
 def is_git_url(value: str) -> bool:
     text = value.strip()
     return text.startswith(("http://", "https://", "git@"))
+
+
+def _looks_like_path(text: str) -> bool:
+    if re.match(r"^[A-Za-z]:[\\/]", text):
+        return True
+    if text.startswith(("/", "\\", "./", "../", ".\\", "..\\")):
+        return True
+    return "\\" in text
+
+
+def normalize_target(value: str) -> str:
+    """Use https when a host is typed without a scheme. Paths and git@ stay as written."""
+    text = value.strip()
+    if not text or is_git_url(text) or _looks_like_path(text):
+        return text
+    if _SCHEMELESS_RE.match(text):
+        return "https://" + text
+    return text
 
 
 def sanitize_git_url(url: str) -> str:
@@ -87,6 +108,49 @@ def _git(args: list[str], cwd: Path) -> str | None:
 
 def git_identity(path: Path) -> tuple[str | None, str | None]:
     return _git(["rev-parse", "HEAD"], path), _git(["branch", "--show-current"], path)
+
+
+def parse_remote_heads(text: str) -> tuple[list[str], str | None]:
+    """Read `git ls-remote --symref --heads` output. The default is the HEAD symref."""
+    default: str | None = None
+    branches: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("ref:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].startswith("refs/heads/"):
+                default = parts[1].removeprefix("refs/heads/")
+            continue
+        if "\t" not in line:
+            continue
+        ref = line.split("\t", 1)[1].strip()
+        if not ref.startswith("refs/heads/"):
+            continue
+        name = ref.removeprefix("refs/heads/")
+        if name and name not in branches:
+            branches.append(name)
+    if default not in branches:
+        default = branches[0] if branches else None
+    return branches, default
+
+
+def list_remote_branches(repo_url: str) -> tuple[list[str], str | None]:
+    sanitized = sanitize_git_url(repo_url)
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--symref", sanitized, "HEAD", "refs/heads/*"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AcquireError("Listing branches timed out.") from exc
+    except OSError as exc:
+        raise AcquireError("git is not available on PATH.") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "Could not list branches."
+        raise AcquireError(detail)
+    return parse_remote_heads(result.stdout)
 
 
 def clone_repository(repo_url: str, branch: str | None = None) -> Workspace:
@@ -135,6 +199,7 @@ def clone_repository(repo_url: str, branch: str | None = None) -> Workspace:
 
 @contextmanager
 def open_workspace(target: str, branch: str | None = None):
+    target = normalize_target(target)
     if is_git_url(target):
         workspace = clone_repository(target, branch)
         try:
