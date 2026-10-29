@@ -211,16 +211,50 @@
 
     .panel p { max-width: 42rem; }
 
-    .bones {
+    .meter {
       display: grid;
-      gap: 0.85rem;
+      gap: 1.15rem;
       margin-top: 1.5rem;
+      max-width: 36rem;
     }
 
-    .bone {
-      height: 2.6rem;
+    .meter-row[hidden] { display: none; }
+
+    .meter-label {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      margin: 0 0 0.4rem;
+      color: var(--mute);
+    }
+
+    .meter-label span:last-child {
+      font-family: var(--mono);
+      color: var(--ink);
+      text-align: right;
+    }
+
+    .meter-track {
+      height: 1.15rem;
+      overflow: hidden;
       background: var(--sheet);
       border: 1px solid var(--rule);
+    }
+
+    .meter-fill {
+      height: 100%;
+      width: 0;
+      background: var(--fix);
+    }
+
+    .meter-track.waiting .meter-fill {
+      width: 38%;
+      animation: scan-wait 1.2s ease-in-out infinite;
+    }
+
+    @keyframes scan-wait {
+      from { transform: translateX(-120%); }
+      to { transform: translateX(280%); }
     }
 
     #commit {
@@ -568,6 +602,12 @@
     @media (prefers-reduced-motion: reduce) {
       .scan:active,
       .ignore:active { transform: none; }
+      .meter-track.waiting .meter-fill {
+        animation: none;
+        transform: none;
+        width: 100%;
+        opacity: 0.35;
+      }
     }
   </style>
 </head>
@@ -674,11 +714,26 @@
       <div class="panel" id="state-report" hidden></div>
       <div class="panel" id="state-scanning" hidden>
         <h2>Scanning</h2>
-        <p>Reading the tree and asking OSV.</p>
-        <div class="bones" aria-hidden="true">
-          <div class="bone"></div>
-          <div class="bone"></div>
-          <div class="bone"></div>
+        <p id="scan-status">Reading the tree and asking OSV.</p>
+        <div class="meter">
+          <div class="meter-row">
+            <p class="meter-label"><span>Files</span><span id="scan-files-value">—</span></p>
+            <div class="meter-track waiting" id="scan-files-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Counting files" aria-label="Files read" aria-busy="true">
+              <div class="meter-fill"></div>
+            </div>
+          </div>
+          <div class="meter-row">
+            <p class="meter-label"><span>Size</span><span id="scan-size-value">—</span></p>
+            <div class="meter-track waiting" id="scan-size-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Counting size" aria-label="Size read" aria-busy="true">
+              <div class="meter-fill"></div>
+            </div>
+          </div>
+          <div class="meter-row" id="scan-packages" hidden>
+            <p class="meter-label"><span id="scan-packages-name">Packages</span><span id="scan-packages-value">—</span></p>
+            <div class="meter-track" id="scan-packages-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Asking OSV" aria-label="Packages asked" aria-busy="false">
+              <div class="meter-fill"></div>
+            </div>
+          </div>
         </div>
       </div>
       <div class="panel" id="state-empty" hidden>
@@ -757,6 +812,144 @@
         setCommit("");
         setResult(null);
       }
+      if (state === "scanning") resetScanProgress();
+    }
+
+    function formatCount(value) {
+      return Number(value || 0).toLocaleString("en-US");
+    }
+
+    function formatBytes(value) {
+      const n = Number(value) || 0;
+      if (n < 1024) return `${n} B`;
+      const units = ["KB", "MB", "GB"];
+      let size = n / 1024;
+      let unit = 0;
+      while (size >= 1024 && unit < units.length - 1) {
+        size /= 1024;
+        unit += 1;
+      }
+      const digits = size >= 10 ? 0 : 1;
+      const shown = digits ? size.toFixed(1).replace(/\.0$/, "") : String(Math.round(size));
+      return `${shown} ${units[unit]}`;
+    }
+
+    function completion(done, total) {
+      const all = Number(total) || 0;
+      const have = Number(done) || 0;
+      if (all <= 0) return 100;
+      return Math.max(0, Math.min(100, Math.round((have / all) * 100)));
+    }
+
+    function rateText(done, total, format) {
+      return `${format(done)} of ${format(total)} · ${completion(done, total)}%`;
+    }
+
+    function setMeter(barId, valueId, percent, text, waiting) {
+      const bar = document.getElementById(barId);
+      const fill = bar.querySelector(".meter-fill");
+      bar.classList.toggle("waiting", Boolean(waiting));
+      fill.style.width = waiting ? "" : `${percent}%`;
+      bar.setAttribute("aria-valuenow", waiting ? "0" : String(percent));
+      bar.setAttribute("aria-valuetext", text);
+      bar.setAttribute("aria-busy", waiting ? "true" : "false");
+      if (valueId) document.getElementById(valueId).textContent = text;
+    }
+
+    function resetScanProgress() {
+      document.getElementById("scan-status").textContent = "Reading the tree and asking OSV.";
+      document.getElementById("scan-packages").hidden = true;
+      document.getElementById("scan-packages-name").textContent = "Packages";
+      setMeter("scan-files-bar", "scan-files-value", 0, "—", true);
+      setMeter("scan-size-bar", "scan-size-value", 0, "—", true);
+      setMeter("scan-packages-bar", "scan-packages-value", 0, "—", true);
+    }
+
+    function renderScanProgress(event) {
+      const status = document.getElementById("scan-status");
+      if (event.phase === "clone") {
+        status.textContent = "Cloning the repository.";
+        setMeter("scan-files-bar", "scan-files-value", 0, "—", true);
+        setMeter("scan-size-bar", "scan-size-value", 0, "—", true);
+        return;
+      }
+      if (event.phase === "count") {
+        status.textContent = "Counting files.";
+        setMeter("scan-files-bar", "scan-files-value", 0, `${formatCount(event.files_done)} so far`, true);
+        setMeter("scan-size-bar", "scan-size-value", 0, `${formatBytes(event.bytes_done)} so far`, true);
+        return;
+      }
+      if (event.phase === "read") {
+        status.textContent = "Reading the tree.";
+        setMeter(
+          "scan-files-bar",
+          "scan-files-value",
+          completion(event.files_done, event.files_total),
+          rateText(event.files_done, event.files_total, formatCount),
+          false,
+        );
+        setMeter(
+          "scan-size-bar",
+          "scan-size-value",
+          completion(event.bytes_done, event.bytes_total),
+          rateText(event.bytes_done, event.bytes_total, formatBytes),
+          false,
+        );
+        return;
+      }
+      if (event.phase === "osv") {
+        status.textContent = "Asking OSV.";
+        const row = document.getElementById("scan-packages");
+        row.hidden = false;
+        document.getElementById("scan-packages-name").textContent = "Packages";
+        setMeter(
+          "scan-packages-bar",
+          "scan-packages-value",
+          completion(event.packages_done, event.packages_total),
+          rateText(event.packages_done, event.packages_total, formatCount),
+          false,
+        );
+        return;
+      }
+      if (event.phase === "advisories") {
+        status.textContent = "Reading advisories.";
+        const row = document.getElementById("scan-packages");
+        row.hidden = false;
+        document.getElementById("scan-packages-name").textContent = "Advisories";
+        setMeter(
+          "scan-packages-bar",
+          "scan-packages-value",
+          completion(event.advisories_done, event.advisories_total),
+          rateText(event.advisories_done, event.advisories_total, formatCount),
+          false,
+        );
+      }
+    }
+
+    async function readScanStream(response) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let result = null;
+      while (true) {
+        const step = await reader.read();
+        if (step.done) break;
+        buffer += decoder.decode(step.value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const message = JSON.parse(line);
+          if (message.event === "progress") renderScanProgress(message);
+          else if (message.event === "result") result = message;
+        }
+      }
+      if (buffer.trim()) {
+        const message = JSON.parse(buffer);
+        if (message.event === "progress") renderScanProgress(message);
+        else if (message.event === "result") result = message;
+      }
+      return result;
     }
 
     function showError(title, body) {
@@ -1461,9 +1654,29 @@
       try {
         const response = await fetch("/scan", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/x-ndjson",
+          },
           body: JSON.stringify(body),
         });
+        const type = response.headers.get("content-type") || "";
+        if (type.includes("ndjson")) {
+          let result = null;
+          try {
+            result = await readScanStream(response);
+          } catch (err) {
+            showError("Scan failed.", "The scan could not be reached.");
+            return;
+          }
+          if (!result || !result.ok) {
+            showError("Scan failed.", (result && result.error) || "The scan failed.");
+            return;
+          }
+          renderReport(result.report, "Scanned just now.");
+          if (result.report.scan_id) await loadScans(result.report.scan_id);
+          return;
+        }
         let payload = null;
         try {
           payload = await response.json();
