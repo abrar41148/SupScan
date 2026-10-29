@@ -1,7 +1,7 @@
 """Compare two saved scans.
 
-The same package is the ecosystem and the name. COMPARE.md records the type
-table and the two columns the page paints from `rows`.
+The same package is the ecosystem and the name. The version is what changed.
+The page paints the two columns from `rows`.
 """
 
 from __future__ import annotations
