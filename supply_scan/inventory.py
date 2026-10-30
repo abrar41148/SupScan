@@ -8,6 +8,10 @@ unchecked row, not a short package list. A yarn.lock that is neither classic
 v1 nor the Berry shape is one unchecked row. A gradle.lockfile line this
 parser does not know is one unchecked row, not a short package list. Nothing
 here installs packages, and nothing here runs Gradle or Maven.
+conan.lock, mix.lock, Cabal and Stack locks, Bun, NuGet, Pipenv, PDM, pylock,
+renv, gems.locked, Dart package_config.json, and the extra Gradle locks are
+read the same way. A git submodule or a nested checkout is recorded by its
+commit when git can read it.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import tomllib
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -42,6 +47,22 @@ SCAN_MANIFEST_NAMES = frozenset({
     "uv.lock",
     "poetry.lock",
     "pyproject.toml",
+    "conan.lock",
+    "package_config.json",
+    "mix.lock",
+    "cabal.project.freeze",
+    "stack.yaml.lock",
+    "buildscript-gradle.lockfile",
+    "bun.lock",
+    "deps.json",
+    "packages.config",
+    "packages.lock.json",
+    "pipfile.lock",
+    "pdm.lock",
+    "pylock.toml",
+    "renv.lock",
+    "gems.locked",
+    ".gitmodules",
 })
 
 
@@ -55,6 +76,12 @@ def is_scan_manifest_relpath(relpath: str) -> bool:
         return False
     name = parts[-1].lower()
     if name in SCAN_MANIFEST_NAMES:
+        return True
+    if name == "deps.json" or name.endswith(".deps.json"):
+        return True
+    if name == "pylock.toml" or (name.startswith("pylock.") and name.endswith(".toml")):
+        return True
+    if name == "verification-metadata.xml" and len(parts) >= 2 and parts[-2].lower() == "gradle":
         return True
     return name.startswith("requirements") and name.endswith(".txt")
 
@@ -2364,6 +2391,597 @@ def _emit_read(on_progress, files_done: int, files_total: int, bytes_done: int, 
     })
 
 
+def _unrecognised(ecosystem: str, manifest: str, reason: str) -> list[Package]:
+    return [_unchecked(ecosystem, manifest, None, False, manifest, reason)]
+
+
+def _conan_reference(ref: str) -> tuple[str, str] | None:
+    # name/version[@user[/channel]][#rrev][:pkgid[#prev]][%timestamp]
+    ref = ref.split("%", 1)[0]
+    ref = ref.split(":", 1)[0]
+    ref = ref.split("#", 1)[0]
+    if "@" in ref:
+        ref = ref.split("@", 1)[0]
+    if "/" not in ref:
+        return None
+    name, version = ref.split("/", 1)
+    if not name or not version:
+        return None
+    return name, version
+
+
+def parse_conan_lock(text: str, manifest: str) -> list[Package]:
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        return _unrecognised("ConanCenter", manifest, "conan lock shape was not recognised")
+    graph = data.get("graph_lock")
+    if isinstance(graph, dict) and isinstance(graph.get("nodes"), dict):
+        found: list[Package] = []
+        for node in graph["nodes"].values():
+            if not isinstance(node, dict) or node.get("path"):
+                continue
+            ref = node.get("pref") or node.get("ref") or ""
+            if not isinstance(ref, str) or not ref:
+                continue
+            parsed = _conan_reference(ref)
+            if parsed is None:
+                continue
+            name, version = parsed
+            found.append(Package("ConanCenter", name, version, False, False, manifest))
+        return dedupe(found)
+    if any(key in data for key in ("requires", "build_requires", "python_requires")):
+        found = []
+        groups = (
+            ("requires", False),
+            ("build_requires", True),
+            ("python_requires", False),
+        )
+        for key, dev in groups:
+            rows = data.get(key) or []
+            if rows is None:
+                rows = []
+            if not isinstance(rows, list):
+                return _unrecognised("ConanCenter", manifest, "conan lock shape was not recognised")
+            for ref in rows:
+                if not isinstance(ref, str):
+                    continue
+                parsed = _conan_reference(ref)
+                if parsed is None:
+                    continue
+                name, version = parsed
+                found.append(Package("ConanCenter", name, version, True, dev, manifest))
+        return dedupe(found)
+    return _unrecognised("ConanCenter", manifest, "conan lock shape was not recognised")
+
+
+_MIX_GIT = re.compile(r'^ +"([^"]+)": \{:git, +"([^,]+)", +"([^,]+)",.+$')
+_MIX_REG = re.compile(r'^ +"([^"]+)": \{([^,]+), +([^,]+), +"([^,]+)", +"([^,]+)",.+$')
+
+
+def parse_mix_lock(text: str, manifest: str) -> list[Package]:
+    found: list[Package] = []
+    leftover = False
+    for raw in text.splitlines():
+        if not raw.strip() or raw.strip() in {"%{", "}"}:
+            continue
+        if _MIX_GIT.match(raw):
+            name = _MIX_GIT.match(raw).group(1)
+            found.append(_unchecked(
+                "Hex", name, None, False, manifest, "git source, not a Hex release", direct=True,
+            ))
+            continue
+        match = _MIX_REG.match(raw)
+        if match:
+            found.append(Package("Hex", match.group(1), match.group(4), True, False, manifest))
+            continue
+        leftover = True
+    if leftover and not found:
+        return _unrecognised("Hex", manifest, "mix lock shape was not recognised")
+    return found
+
+
+_CABAL_PIN = re.compile(r"any\.(\S+) ==(\S+)")
+_STACK_PIN = re.compile(r"hackage:\s*([A-Za-z0-9-]+)-([0-9.]+)@")
+
+
+def parse_cabal_freeze(text: str, manifest: str) -> list[Package]:
+    found: list[Package] = []
+    saw_freeze = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        if stripped.startswith("index-state:") or stripped.startswith("constraints:"):
+            saw_freeze = True
+        match = _CABAL_PIN.search(raw)
+        if match:
+            saw_freeze = True
+            found.append(Package(
+                "Hackage", match.group(1), match.group(2).rstrip(","), False, False, manifest,
+            ))
+    if found:
+        return dedupe(found)
+    if saw_freeze or not text.strip():
+        return []
+    return _unrecognised("Hackage", manifest, "cabal freeze shape was not recognised")
+
+
+def parse_stack_lock(text: str, manifest: str) -> list[Package]:
+    found: list[Package] = []
+    for raw in text.splitlines():
+        match = _STACK_PIN.search(raw)
+        if not match:
+            continue
+        found.append(Package("Hackage", match.group(1), match.group(2), False, False, manifest))
+    if found:
+        return dedupe(found)
+    if text.strip() and "snapshots:" not in text and "packages:" not in text:
+        return _unrecognised("Hackage", manifest, "stack lock shape was not recognised")
+    return []
+
+
+def _bun_spec(spec: str) -> tuple[str, str, str]:
+    scoped = spec.startswith("@")
+    body = spec[1:] if scoped else spec
+    name, sep, rest = body.partition("@")
+    if scoped:
+        name = "@" + name
+    if not sep:
+        return name, "", ""
+    version, _hash, commit = rest.partition("#")
+    if commit:
+        version = ""
+    if version.startswith("file:"):
+        version = ""
+    return name, version, commit
+
+
+def _json_dep_names(text: str | None) -> tuple[set[str], set[str]]:
+    if not text:
+        return set(), set()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return set(), set()
+    if not isinstance(data, dict):
+        return set(), set()
+
+    def names(key: str) -> set[str]:
+        block = data.get(key)
+        return set(block) if isinstance(block, dict) else set()
+
+    return names("dependencies"), names("devDependencies")
+
+
+def _jsonc_to_json(text: str) -> str:
+    """bun.lock is JSON with comments and trailing commas."""
+    out: list[str] = []
+    index = 0
+    length = len(text)
+    in_string = False
+    escape = False
+    while index < length:
+        char = text[index]
+        if in_string:
+            out.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            index += 1
+            continue
+        if char == "/" and index + 1 < length and text[index + 1] == "/":
+            index += 2
+            while index < length and text[index] not in "\r\n":
+                index += 1
+            continue
+        if char == "/" and index + 1 < length and text[index + 1] == "*":
+            index += 2
+            while index + 1 < length and not (text[index] == "*" and text[index + 1] == "/"):
+                index += 1
+            index = min(index + 2, length)
+            continue
+        if char == ",":
+            look = index + 1
+            while look < length and text[look] in " \t\r\n":
+                look += 1
+            if look < length and text[look] in "}]":
+                index += 1
+                continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def parse_bun_lock(text: str, manifest: str, package_json: str | None) -> list[Package]:
+    data = json.loads(_jsonc_to_json(text))
+    packages = data.get("packages") if isinstance(data, dict) else None
+    if not isinstance(packages, dict):
+        return _unrecognised("npm", manifest, "bun lock shape was not recognised")
+    prod, dev = _json_dep_names(package_json)
+    found: list[Package] = []
+    for spec in packages.values():
+        if not isinstance(spec, list) or not spec or not isinstance(spec[0], str):
+            continue
+        name, version, commit = _bun_spec(spec[0])
+        if not name:
+            continue
+        direct = name in prod or name in dev
+        is_dev = name in dev and name not in prod
+        if commit and not version:
+            found.append(_unchecked(
+                "npm", name, None, is_dev, manifest, "git source, not an npm release", direct=direct,
+            ))
+            continue
+        if not version:
+            found.append(_unchecked(
+                "npm", name, None, is_dev, manifest, "path source, not an npm release", direct=direct,
+            ))
+            continue
+        found.append(Package("npm", name, version, direct, is_dev, manifest))
+    return dedupe(found)
+
+
+def parse_deps_json(text: str, manifest: str, *, strict: bool) -> list[Package]:
+    data = json.loads(text)
+    libraries = data.get("libraries") if isinstance(data, dict) else None
+    if not isinstance(libraries, dict):
+        if strict:
+            return _unrecognised("NuGet", manifest, "deps.json shape was not recognised")
+        return []
+    found: list[Package] = []
+    for key, library in libraries.items():
+        if not isinstance(key, str) or key.count("/") != 1:
+            continue
+        name, version = key.split("/", 1)
+        if not name or not version:
+            continue
+        kind = library.get("type") if isinstance(library, dict) else ""
+        if kind == "project":
+            continue
+        found.append(Package("NuGet", name, version, False, False, manifest))
+    return dedupe(found)
+
+
+def parse_packages_config(text: str, manifest: str) -> list[Package]:
+    root = ET.fromstring(text)
+    if _local_name(root.tag) != "packages":
+        return _unrecognised("NuGet", manifest, "packages.config shape was not recognised")
+    found: list[Package] = []
+    for child in list(root):
+        if _local_name(child.tag) != "package":
+            continue
+        name = (child.attrib.get("id") or "").strip()
+        version = (child.attrib.get("version") or "").strip()
+        if name and version:
+            found.append(Package("NuGet", name, version, True, False, manifest))
+    return found
+
+
+def parse_packages_lock(text: str, manifest: str) -> list[Package]:
+    data = json.loads(text)
+    frameworks = data.get("dependencies") if isinstance(data, dict) else None
+    if not isinstance(frameworks, dict):
+        return _unrecognised("NuGet", manifest, "packages.lock.json shape was not recognised")
+    found: list[Package] = []
+    for packages in frameworks.values():
+        if not isinstance(packages, dict):
+            continue
+        for name, info in packages.items():
+            if not isinstance(name, str) or not isinstance(info, dict):
+                continue
+            version = info.get("resolved")
+            if isinstance(version, str) and version:
+                found.append(Package("NuGet", name, version, False, False, manifest))
+    return dedupe(found)
+
+
+def parse_pipfile_lock(text: str, manifest: str) -> list[Package]:
+    data = json.loads(text)
+    if not isinstance(data, dict) or not any(key in data for key in ("default", "develop")):
+        return _unrecognised("PyPI", manifest, "Pipfile lock shape was not recognised")
+    found: list[Package] = []
+    seen: set[tuple[str, str]] = set()
+    for key, dev in (("default", False), ("develop", True)):
+        block = data.get(key) or {}
+        if not isinstance(block, dict):
+            return _unrecognised("PyPI", manifest, "Pipfile lock shape was not recognised")
+        for name, info in block.items():
+            version = info.get("version") if isinstance(info, dict) else None
+            norm = pypi_name(str(name))
+            if not isinstance(version, str) or not version.startswith("==") or len(version) < 3:
+                shown = version if isinstance(version, str) else None
+                found.append(_unchecked(
+                    "PyPI", norm, shown, dev, manifest, "version is a range, no lockfile",
+                ))
+                continue
+            pin = version[2:]
+            if (norm, pin) in seen:
+                continue
+            seen.add((norm, pin))
+            found.append(Package("PyPI", norm, pin, True, dev, manifest))
+    return found
+
+
+def parse_pdm_lock(text: str, manifest: str) -> list[Package]:
+    data = tomllib.loads(text)
+    if not isinstance(data, dict) or ("package" not in data and "lock-version" not in data):
+        return _unrecognised("PyPI", manifest, "pdm lock shape was not recognised")
+    packages = data.get("package") or []
+    if not isinstance(packages, list):
+        return _unrecognised("PyPI", manifest, "pdm lock shape was not recognised")
+    found: list[Package] = []
+    for pkg in packages:
+        if not isinstance(pkg, dict) or not pkg.get("name"):
+            continue
+        name = pypi_name(str(pkg["name"]))
+        groups = pkg.get("groups") if isinstance(pkg.get("groups"), list) else []
+        labels = {str(group) for group in groups}
+        dev = "dev" in labels and "default" not in labels
+        direct = "default" in labels or "dev" in labels
+        version = pkg.get("version")
+        if isinstance(version, str) and version:
+            found.append(Package("PyPI", name, version, direct, dev, manifest))
+            continue
+        if pkg.get("revision"):
+            found.append(_unchecked(
+                "PyPI", name, None, dev, manifest, "git source, not a PyPI release", direct=direct,
+            ))
+            continue
+        found.append(_unchecked(
+            "PyPI", name, None, dev, manifest, "version is not written in the repo", direct=direct,
+        ))
+    return dedupe(found)
+
+
+def parse_pylock(text: str, manifest: str) -> list[Package]:
+    data = tomllib.loads(text)
+    packages = data.get("packages") if isinstance(data, dict) else None
+    if not isinstance(packages, list):
+        return _unrecognised("PyPI", manifest, "pylock shape was not recognised")
+    found: list[Package] = []
+    for pkg in packages:
+        if not isinstance(pkg, dict) or not pkg.get("name"):
+            continue
+        name = pypi_name(str(pkg["name"]))
+        version = pkg.get("version")
+        directory = pkg.get("directory") if isinstance(pkg.get("directory"), dict) else {}
+        vcs = pkg.get("vcs") if isinstance(pkg.get("vcs"), dict) else {}
+        if (not isinstance(version, str) or not version) and directory.get("path") == ".":
+            continue
+        if isinstance(version, str) and version:
+            found.append(Package("PyPI", name, version, False, False, manifest))
+            continue
+        if vcs.get("commit-id"):
+            found.append(_unchecked(
+                "PyPI", name, None, False, manifest, "git source, not a PyPI release",
+            ))
+            continue
+        if directory:
+            found.append(_unchecked(
+                "PyPI", name, None, False, manifest, "path source, not a PyPI release",
+            ))
+            continue
+        found.append(_unchecked(
+            "PyPI", name, None, False, manifest, "version is not written in the repo",
+        ))
+    return found
+
+
+def parse_renv_lock(text: str, manifest: str) -> list[Package]:
+    data = json.loads(text)
+    packages = data.get("Packages") if isinstance(data, dict) else None
+    if not isinstance(packages, dict):
+        return _unrecognised("CRAN", manifest, "renv lock shape was not recognised")
+    found: list[Package] = []
+    for pkg in packages.values():
+        if not isinstance(pkg, dict):
+            continue
+        name = pkg.get("Package")
+        version = pkg.get("Version")
+        if not isinstance(name, str) or not name:
+            continue
+        shown = version if isinstance(version, str) else None
+        if pkg.get("Repository") == "CRAN" and shown:
+            found.append(Package("CRAN", name, shown, False, False, manifest))
+            continue
+        found.append(_unchecked("CRAN", name, shown, False, manifest, "not a CRAN release"))
+    return found
+
+
+_DART_VERSION = re.compile(r"^.*?-([0-9]+\.[0-9]+\.[0-9]+.*)$")
+
+
+def parse_package_config(text: str, manifest: str) -> list[Package]:
+    data = json.loads(text)
+    packages = data.get("packages") if isinstance(data, dict) else None
+    if not isinstance(packages, list):
+        return _unrecognised("Pub", manifest, "package config shape was not recognised")
+    found: list[Package] = []
+    for pkg in packages:
+        if not isinstance(pkg, dict):
+            continue
+        name = pkg.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        root_uri = pkg.get("rootUri") if isinstance(pkg.get("rootUri"), str) else ""
+        base = root_uri.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        match = _DART_VERSION.match(base)
+        if match:
+            found.append(Package("Pub", name, match.group(1), False, False, manifest))
+            continue
+        found.append(_unchecked(
+            "Pub", name, None, False, manifest, "path source, not a Pub release",
+        ))
+    return found
+
+
+def parse_gradle_verification(text: str, manifest: str) -> list[Package]:
+    root = _pom_root(text)
+    found: list[Package] = []
+    saw = False
+    for element in root.iter():
+        if _local_name(element.tag) != "component":
+            continue
+        saw = True
+        group = (element.attrib.get("group") or "").strip()
+        name = (element.attrib.get("name") or "").strip()
+        version = (element.attrib.get("version") or "").strip()
+        if not group or not name or not version:
+            continue
+        if not _maven_token(group) or not _maven_token(name):
+            continue
+        coordinate = f"{group}:{name}"
+        if _literal_maven_version(version):
+            found.append(Package("Maven", coordinate, version, False, False, manifest))
+            continue
+        found.append(_unchecked(
+            "Maven", coordinate, version, False, manifest, "version is a range, no lockfile",
+        ))
+    if not saw:
+        return _unrecognised("Maven", manifest, "verification metadata shape was not recognised")
+    return dedupe(found)
+
+
+def _is_pylock_name(name: str) -> bool:
+    lower = name.lower()
+    return lower == "pylock.toml" or (lower.startswith("pylock.") and lower.endswith(".toml"))
+
+
+def _is_deps_json_name(name: str) -> bool:
+    lower = name.lower()
+    return lower == "deps.json" or lower.endswith(".deps.json")
+
+
+_SUBMODULE_HEADER = re.compile(r'^\[submodule\s+"([^"]+)"\]\s*$')
+
+
+def _git_remote_name(url: str) -> str:
+    text = url.strip()
+    if text.startswith("git@") and ":" in text:
+        host, path = text[4:].split(":", 1)
+        text = f"https://{host}/{path}"
+    if text.startswith("http://"):
+        text = "https://" + text[len("http://"):]
+    if text.endswith(".git"):
+        text = text[:-4]
+    return text.rstrip("/")
+
+
+def _git_output(args: list[str], cwd: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+            check=False,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    text = result.stdout.decode("utf-8", "replace").strip()
+    return text or None
+
+
+def _submodule_blocks(text: str) -> tuple[list[tuple[str, str]], bool]:
+    path = None
+    url = None
+    blocks: list[tuple[str, str]] = []
+    recognised = False
+
+    def flush() -> None:
+        nonlocal path, url
+        if path and url:
+            blocks.append((path, url))
+        path = None
+        url = None
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        header = _SUBMODULE_HEADER.match(line)
+        if header:
+            recognised = True
+            flush()
+            path = header.group(1)
+            continue
+        if "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if key == "path" and value:
+            path = value
+        elif key == "url" and value:
+            url = value
+    flush()
+    return blocks, recognised
+
+
+def _gitlink_commit(listing: str) -> str | None:
+    for line in listing.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[1] == "commit" and len(parts[2]) >= 7:
+            return parts[2]
+    return None
+
+
+def _collect_git_pins(root: Path, git_dirs: set[Path]) -> list[Package]:
+    found: list[Package] = []
+    seen: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        _walk_dirs(dirnames)
+        if ".gitmodules" not in filenames:
+            continue
+        directory = Path(dirpath).relative_to(root)
+        manifest = _rel(directory, ".gitmodules")
+        blocks, recognised = _submodule_blocks(_read(Path(dirpath) / ".gitmodules"))
+        if not recognised:
+            found.extend(_unrecognised("GIT", manifest, "gitmodules shape was not recognised"))
+            continue
+        git_root = Path(dirpath)
+        for rel_path, url in blocks:
+            full = (directory / rel_path).as_posix()
+            seen.add(full)
+            name = _git_remote_name(url)
+            sha = None
+            if (git_root / ".git").exists():
+                listing = _git_output(["ls-tree", "HEAD", "--", rel_path], git_root)
+                if listing:
+                    sha = _gitlink_commit(listing)
+            if sha and name:
+                found.append(Package("GIT", name, sha, True, False, manifest))
+                continue
+            found.append(_unchecked(
+                "GIT", name or rel_path, sha, False, manifest,
+                "git commit was not read", direct=True,
+            ))
+    for directory in sorted(git_dirs, key=lambda item: item.as_posix()):
+        if directory == Path("."):
+            continue
+        rel = directory.as_posix()
+        if rel in seen:
+            continue
+        folder = root / directory
+        sha = _git_output(["rev-parse", "HEAD"], folder)
+        url = _git_output(["remote", "get-url", "origin"], folder)
+        if sha and url:
+            found.append(Package("GIT", _git_remote_name(url), sha, True, False, rel))
+            continue
+        found.append(_unchecked(
+            "GIT", rel, sha, False, rel, "vendored git commit was not read", direct=True,
+        ))
+    return found
+
+
 def scan_tree(root: Path, on_progress=None) -> list[Package]:
     root = root.resolve()
     files_total = 0
@@ -2374,7 +2992,11 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
     files_done = 0
     bytes_done = 0
     entries: list[tuple[Path, set[str], Path]] = []
+    git_dirs: set[Path] = set()
     for dirpath, dirnames, filenames in os.walk(root):
+        directory = Path(dirpath).relative_to(root)
+        if ".git" in dirnames or ".git" in filenames:
+            git_dirs.add(directory)
         _walk_dirs(dirnames)
         if on_progress is not None:
             for name in filenames:
@@ -2382,14 +3004,13 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
                 bytes_done += _file_size(Path(dirpath) / name)
                 if files_done == files_total or files_done % 40 == 0:
                     _emit_read(on_progress, files_done, files_total, bytes_done, bytes_total)
-        directory = Path(dirpath).relative_to(root)
         entries.append((directory, set(filenames), Path(dirpath)))
     if on_progress is not None:
         _emit_read(on_progress, files_done, files_done, bytes_done, bytes_done)
 
     npm_locks = {
         directory for directory, names, _path in entries
-        if "package-lock.json" in names or "pnpm-lock.yaml" in names or "yarn.lock" in names
+        if "package-lock.json" in names or "pnpm-lock.yaml" in names or "yarn.lock" in names or "bun.lock" in names
     }
     cargo_locks = {directory for directory, names, _path in entries if "Cargo.lock" in names}
     pub_locks = {directory for directory, names, _path in entries if "pubspec.lock" in names}
@@ -2433,6 +3054,14 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
             jsons = yarn_jsons.get(directory, [])
             found.extend(_safe(
                 lambda p=path, m=manifest, q=jsons: parse_yarn_lock(_read(p / "yarn.lock"), q, m),
+                manifest,
+                "npm",
+            ))
+        if "bun.lock" in names:
+            manifest = _rel(directory, "bun.lock")
+            package_json = _read(path / "package.json") if "package.json" in names else None
+            found.extend(_safe(
+                lambda p=path, m=manifest, q=package_json: parse_bun_lock(_read(p / "bun.lock"), m, q),
                 manifest,
                 "npm",
             ))
@@ -2480,7 +3109,17 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
                 manifest,
                 "RubyGems",
             ))
-        elif "Gemfile" in names:
+        if "gems.locked" in names:
+            manifest = _rel(directory, "gems.locked")
+            gemfile = _read(path / "Gemfile") if "Gemfile" in names else None
+            found.extend(_safe(
+                lambda p=path, m=manifest, g=gemfile: parse_gemfile_lock(
+                    _read(p / "gems.locked"), g, m,
+                ),
+                manifest,
+                "RubyGems",
+            ))
+        if "Gemfile" in names and "Gemfile.lock" not in names and "gems.locked" not in names:
             manifest = _rel(directory, "Gemfile")
             found.extend(_safe(
                 lambda p=path, m=manifest: parse_gemfile(_read(p / "Gemfile"), m),
@@ -2497,11 +3136,34 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
                 "crates.io",
             ))
 
-        if "uv.lock" in names:
+        if "Pipfile.lock" in names:
+            manifest = _rel(directory, "Pipfile.lock")
+            found.extend(_safe(
+                lambda p=path, m=manifest: parse_pipfile_lock(_read(p / "Pipfile.lock"), m),
+                manifest,
+                "PyPI",
+            ))
+        if "pdm.lock" in names:
+            manifest = _rel(directory, "pdm.lock")
+            found.extend(_safe(
+                lambda p=path, m=manifest: parse_pdm_lock(_read(p / "pdm.lock"), m),
+                manifest,
+                "PyPI",
+            ))
+        pylock_names = sorted(name for name in names if _is_pylock_name(name))
+        for pylock_name in pylock_names:
+            manifest = _rel(directory, pylock_name)
+            found.extend(_safe(
+                lambda p=path, n=pylock_name, m=manifest: parse_pylock(_read(p / n), m),
+                manifest,
+                "PyPI",
+            ))
+        python_locked = "Pipfile.lock" in names or "pdm.lock" in names or bool(pylock_names)
+        if not python_locked and "uv.lock" in names:
             manifest = _rel(directory, "uv.lock")
             found.extend(_safe(lambda p=path, m=manifest: parse_uv_lock(_read(p / "uv.lock"), m), manifest, "PyPI"))
-            continue
-        if "poetry.lock" in names:
+            python_locked = True
+        if not python_locked and "poetry.lock" in names:
             manifest = _rel(directory, "poetry.lock")
             pyproject = _read(path / "pyproject.toml") if "pyproject.toml" in names else None
             found.extend(_safe(
@@ -2509,13 +3171,13 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
                 manifest,
                 "PyPI",
             ))
-            continue
+            python_locked = True
 
         requirement_names = sorted(
             name for name in names
             if name.lower() == "requirements.txt" or (name.lower().startswith("requirements") and name.lower().endswith(".txt"))
         )
-        if requirement_names:
+        if not python_locked and requirement_names:
             for name in requirement_names:
                 manifest = _rel(directory, name)
                 dev = "dev" in name.lower()
@@ -2524,10 +3186,75 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
                     manifest,
                     "PyPI",
                 ))
-            continue
-        if "pyproject.toml" in names:
+            python_locked = True
+        if not python_locked and "pyproject.toml" in names:
             manifest = _rel(directory, "pyproject.toml")
             found.extend(_safe(lambda p=path, m=manifest: parse_pyproject(_read(p / "pyproject.toml"), m), manifest, "PyPI"))
+
+        if "conan.lock" in names:
+            manifest = _rel(directory, "conan.lock")
+            found.extend(_safe(
+                lambda p=path, m=manifest: parse_conan_lock(_read(p / "conan.lock"), m),
+                manifest,
+                "ConanCenter",
+            ))
+        if "mix.lock" in names:
+            manifest = _rel(directory, "mix.lock")
+            found.extend(_safe(
+                lambda p=path, m=manifest: parse_mix_lock(_read(p / "mix.lock"), m),
+                manifest,
+                "Hex",
+            ))
+        if "cabal.project.freeze" in names:
+            manifest = _rel(directory, "cabal.project.freeze")
+            found.extend(_safe(
+                lambda p=path, m=manifest: parse_cabal_freeze(_read(p / "cabal.project.freeze"), m),
+                manifest,
+                "Hackage",
+            ))
+        if "stack.yaml.lock" in names:
+            manifest = _rel(directory, "stack.yaml.lock")
+            found.extend(_safe(
+                lambda p=path, m=manifest: parse_stack_lock(_read(p / "stack.yaml.lock"), m),
+                manifest,
+                "Hackage",
+            ))
+        if "package_config.json" in names:
+            manifest = _rel(directory, "package_config.json")
+            found.extend(_safe(
+                lambda p=path, m=manifest: parse_package_config(_read(p / "package_config.json"), m),
+                manifest,
+                "Pub",
+            ))
+        if "packages.config" in names:
+            manifest = _rel(directory, "packages.config")
+            found.extend(_safe(
+                lambda p=path, m=manifest: parse_packages_config(_read(p / "packages.config"), m),
+                manifest,
+                "NuGet",
+            ))
+        if "packages.lock.json" in names:
+            manifest = _rel(directory, "packages.lock.json")
+            found.extend(_safe(
+                lambda p=path, m=manifest: parse_packages_lock(_read(p / "packages.lock.json"), m),
+                manifest,
+                "NuGet",
+            ))
+        for deps_name in sorted(name for name in names if _is_deps_json_name(name)):
+            manifest = _rel(directory, deps_name)
+            strict = deps_name.lower() == "deps.json"
+            found.extend(_safe(
+                lambda p=path, n=deps_name, m=manifest, s=strict: parse_deps_json(_read(p / n), m, strict=s),
+                manifest,
+                "NuGet",
+            ))
+        if "renv.lock" in names:
+            manifest = _rel(directory, "renv.lock")
+            found.extend(_safe(
+                lambda p=path, m=manifest: parse_renv_lock(_read(p / "renv.lock"), m),
+                manifest,
+                "CRAN",
+            ))
 
     # Versions come from gradle.lockfile or a literal in libs.versions.toml.
     # build.gradle and build.gradle.kts are not read.
@@ -2542,21 +3269,31 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
 
     locked_modules: dict[Path, set[str]] = {project: set() for project in gradle_catalogs}
     for directory, names, path in entries:
-        if "gradle.lockfile" not in names:
-            continue
-        manifest = _rel(directory, "gradle.lockfile")
-        owner = _nearest(directory, set(gradle_catalogs))
-        catalog_text = gradle_catalogs[owner][1] if owner is not None else None
-        rows = _safe(
-            lambda p=path, m=manifest, c=catalog_text: parse_gradle_lock(
-                _read(p / "gradle.lockfile"), c, m,
-            ),
-            manifest,
-            "Maven",
-        )
-        found.extend(rows)
-        if owner is not None and not _gradle_failed(rows, manifest):
-            locked_modules[owner].update(pkg.name for pkg in rows if ":" in pkg.name)
+        for lock_name in ("gradle.lockfile", "buildscript-gradle.lockfile"):
+            if lock_name not in names:
+                continue
+            manifest = _rel(directory, lock_name)
+            owner = _nearest(directory, set(gradle_catalogs))
+            catalog_text = gradle_catalogs[owner][1] if owner is not None else None
+            rows = _safe(
+                lambda p=path, n=lock_name, m=manifest, c=catalog_text: parse_gradle_lock(
+                    _read(p / n), c, m,
+                ),
+                manifest,
+                "Maven",
+            )
+            found.extend(rows)
+            if owner is not None and not _gradle_failed(rows, manifest):
+                locked_modules[owner].update(pkg.name for pkg in rows if ":" in pkg.name)
+        if "verification-metadata.xml" in names and directory.name == "gradle":
+            manifest = _rel(directory, "verification-metadata.xml")
+            found.extend(_safe(
+                lambda p=path, m=manifest: parse_gradle_verification(
+                    _read(p / "verification-metadata.xml"), m,
+                ),
+                manifest,
+                "Maven",
+            ))
 
     literal_catalogs: set[Path] = set()
     for project, (file_dir, text) in gradle_catalogs.items():
@@ -2578,7 +3315,7 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
             found.append(pkg)
 
     for directory, names, _path in entries:
-        if "gradle.lockfile" in names:
+        if "gradle.lockfile" in names or "buildscript-gradle.lockfile" in names:
             continue
         script = "build.gradle" if "build.gradle" in names else None
         if script is None and "build.gradle.kts" in names:
@@ -2606,4 +3343,5 @@ def scan_tree(root: Path, on_progress=None) -> list[Package]:
             "Maven",
         ))
 
+    found.extend(_collect_git_pins(root, git_dirs))
     return found

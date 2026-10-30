@@ -612,6 +612,7 @@
     .compare-board .heads p {
       margin: 0 0 0.45rem;
       font-weight: 500;
+      overflow-wrap: anywhere;
     }
 
     .compare-board .cell {
@@ -697,6 +698,7 @@
         margin: 0;
         padding: 0.55rem 0.75rem 0;
         font-weight: 500;
+        overflow-wrap: anywhere;
       }
       .compare-board > .pair:first-of-type .cell { border-top: 0; }
       .compare-board .cell { border-top: 1px solid var(--rule); }
@@ -1510,6 +1512,25 @@
       return option ? option.title || "" : "";
     }
 
+    function repoBranch(target) {
+      const parts = String(target || "").split(/[/\\]/).filter(Boolean);
+      const last = parts.length ? parts[parts.length - 1].replace(/\.git$/i, "") : "";
+      return last || "";
+    }
+
+    function scanHeading(record) {
+      const name = repoBranch(record && record.target);
+      const branch = record && record.branch ? String(record.branch) : "";
+      if (name && branch) return name + " @ " + branch;
+      return name || branch || "Scan";
+    }
+
+    function compareSide(data, key) {
+      const saved = data && data[key];
+      if (saved && (saved.target || saved.branch)) return saved;
+      return sideRecord(document.getElementById(key).value);
+    }
+
     function compareTally(versions, note) {
       const findings = versions.flatMap((pkg) => pkg.vulns || []);
       const tally = findings.length ? groupTally(versions) : "No known vulnerabilities";
@@ -1640,11 +1661,11 @@
       document.getElementById("save").disabled = false;
       const panel = panels.report;
       panel.replaceChildren();
-      const currentTarget = data.current && data.current.target;
-      const previousTarget = data.previous && data.previous.target;
-      const same = currentTarget !== undefined || previousTarget !== undefined
-        ? (currentTarget || "") === (previousTarget || "")
-        : selectedTarget("current") === selectedTarget("previous");
+      const currentSide = compareSide(data, "current");
+      const previousSide = compareSide(data, "previous");
+      const currentHeading = scanHeading(currentSide);
+      const previousHeading = scanHeading(previousSide);
+      const same = (currentSide.target || "") === (previousSide.target || "");
       panel.append(line("p", "relation", same ? "Same repository" : "Different repositories"));
       const rows = data.rows || [];
       const table = document.createElement("table");
@@ -1680,7 +1701,11 @@
       board.className = "compare-board";
       const heads = document.createElement("div");
       heads.className = "heads";
-      heads.append(line("p", "", "This scan"), line("p", "", "Previous scan"));
+      const currentHead = line("p", "", currentHeading);
+      const previousHead = line("p", "", previousHeading);
+      if (currentSide.target) currentHead.title = currentSide.target;
+      if (previousSide.target) previousHead.title = previousSide.target;
+      heads.append(currentHead, previousHead);
       board.append(heads);
       const missingHere = [];
       const missingBefore = [];
@@ -1696,8 +1721,8 @@
         const named = (current[0] || previous[0] || {}).name || row.name || "-";
         if (!current.length && previous.length) missingHere.push(named);
         if (!previous.length && current.length) missingBefore.push(named);
-        const leftBody = fillSide(left, current, "This scan", current.length ? compareTally(current, row.note) : "");
-        const rightBody = fillSide(right, previous, "Previous scan", previous.length ? compareTally(previous, "") : "");
+        const leftBody = fillSide(left, current, currentHeading, current.length ? compareTally(current, row.note) : "");
+        const rightBody = fillSide(right, previous, previousHeading, previous.length ? compareTally(previous, "") : "");
         if (leftBody) {
           if (row.change === "version_changed") {
             leftBody.append(moveLine(previous, current));
@@ -1721,7 +1746,7 @@
         const text = names.length ? names.join(", ") : "none";
         return line("p", "", side + ": no equivalent — " + text);
       };
-      missing.append(missingLine("This scan", missingHere), missingLine("Previous scan", missingBefore));
+      missing.append(missingLine(currentHeading, missingHere), missingLine(previousHeading, missingBefore));
       board.append(missing);
       panel.append(board);
       show("report", "keep");
@@ -2231,11 +2256,23 @@
       "pubspec.lock", "pubspec.yaml", "gemfile.lock", "gemfile",
       "gradle.lockfile", "libs.versions.toml", "pom.xml",
       "uv.lock", "poetry.lock", "pyproject.toml",
+      "conan.lock", "package_config.json", "mix.lock", "cabal.project.freeze",
+      "stack.yaml.lock", "buildscript-gradle.lockfile", "bun.lock", "deps.json",
+      "packages.config", "packages.lock.json", "pipfile.lock", "pdm.lock",
+      "pylock.toml", "renv.lock", "gems.locked", ".gitmodules",
     ]);
 
-    function isManifest(name) {
+    function isManifest(name, relative) {
       const lower = String(name || "").toLowerCase();
-      return manifestNames.has(lower) || (lower.startsWith("requirements") && lower.endsWith(".txt"));
+      if (manifestNames.has(lower)) return true;
+      if (lower.startsWith("requirements") && lower.endsWith(".txt")) return true;
+      if (lower === "deps.json" || lower.endsWith(".deps.json")) return true;
+      if (lower === "pylock.toml" || (lower.startsWith("pylock.") && lower.endsWith(".toml"))) return true;
+      if (lower === "verification-metadata.xml") {
+        const rel = String(relative || "").replace(/\\/g, "/").toLowerCase();
+        return rel === "gradle/verification-metadata.xml" || rel.endsWith("/gradle/verification-metadata.xml");
+      }
+      return false;
     }
 
     function rememberFolder(name, files, branch, commit) {
@@ -2297,11 +2334,12 @@
           }
           continue;
         }
-        if (!isManifest(name)) continue;
+        const relative = prefix ? prefix + "/" + name : name;
+        if (!isManifest(name, relative)) continue;
         const file = await child.getFile();
         if (file.size > 16000000) continue;
         out.push({
-          path: prefix ? prefix + "/" + name : name,
+          path: relative,
           text: await file.text(),
         });
       }
@@ -2316,6 +2354,7 @@
         await readManifests(handle, "", files);
         const identity = await readGitIdentity(handle);
         rememberFolder(handle.name, files, identity.branch, identity.commit);
+        await resolveFolderPath(handle.name, files);
       } catch (err) {
         targetHelp.textContent = targetHelpDefault;
         showError("Could not browse.", "That folder could not be read.");
@@ -2334,12 +2373,48 @@
         if (parts.length > 1) name = parts[0];
         if (parts.slice(1).some((part) => skipDirs.has(part))) continue;
         const fileName = parts[parts.length - 1];
-        if (!isManifest(fileName) || file.size > 16000000) continue;
         const path = parts.length > 1 ? parts.slice(1).join("/") : fileName;
+        if (!isManifest(fileName, path) || file.size > 16000000) continue;
         files.push({ path, text: await file.text() });
         if (files.length > 2000) break;
       }
       rememberFolder(name, files, null, null);
+      await resolveFolderPath(name, files);
+    }
+
+    async function resolveFolderPath(name, files) {
+      const help = targetHelp.textContent;
+      targetHelp.textContent = "Looking for the folder's location…";
+      try {
+        const encoder = new TextEncoder();
+        const response = await fetch("/locate-folder", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            files: files.slice(0, 40).map((file) => ({
+              path: file.path,
+              size: encoder.encode(file.text).length,
+            })),
+          }),
+        });
+        const payload = await response.json();
+        const paths = response.ok && Array.isArray(payload.paths) ? payload.paths : [];
+        if (paths.length !== 1) {
+          targetHelp.textContent = paths.length > 1
+            ? "Several folders have that name. Type the full path to pick one."
+            : help;
+          return;
+        }
+        const row = targetRows[0];
+        pickedFolder = null;
+        row.input.value = paths[0];
+        row.input.dispatchEvent(new Event("input", { bubbles: true }));
+        syncTargetControls();
+        targetHelp.textContent = targetHelpDefault;
+      } catch (err) {
+        targetHelp.textContent = help;
+      }
     }
 
     document.getElementById("browse").addEventListener("click", async () => {

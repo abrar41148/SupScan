@@ -94,6 +94,8 @@ def _looks_like_path(text: str) -> bool:
 def normalize_target(value: str) -> str:
     """Use https when a host is typed without a scheme. Paths and git@ stay as written."""
     text = value.strip()
+    if len(text) > 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
     if not text or is_git_url(text) or _looks_like_path(text):
         return text
     if _SCHEMELESS_RE.match(text):

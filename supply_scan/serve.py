@@ -21,6 +21,7 @@ from supply_scan.acquire import (
 )
 from supply_scan.compare import compare_reports
 from supply_scan.inventory import is_scan_manifest_relpath
+from supply_scan.locate import find_folder
 from supply_scan.ignore import read_ignores, set_ignored
 from supply_scan.match import MatchError
 from supply_scan.run import MAX_BATCH_TARGETS, TargetSpec, run_batch, run_scan, run_tree
@@ -101,6 +102,25 @@ def branches_response(payload: dict | None) -> tuple[int, dict]:
     except AcquireError as exc:
         return 400, {"error": _branch_list_error(str(exc))}
     return 200, {"branches": branches, "default": default}
+
+
+def locate_response(payload: dict, finder=find_folder) -> tuple[int, dict]:
+    name = payload.get("name") if isinstance(payload, dict) else None
+    files = payload.get("files") if isinstance(payload, dict) else None
+    if not isinstance(name, str) or not name.strip() or name != Path(name).name or chr(0) in name:
+        return 400, {"error": "Send the folder name."}
+    manifests: list[tuple[str, int]] = []
+    for item in files if isinstance(files, list) else []:
+        if not isinstance(item, dict):
+            continue
+        relative = _manifest_path(item.get("path"))
+        size = item.get("size")
+        if relative is not None and isinstance(size, int) and size >= 0:
+            manifests.append((relative.as_posix(), size))
+        if len(manifests) >= 40:
+            break
+    found = finder(name.strip(), manifests)
+    return 200, {"paths": [str(path) for path in found[:5]]}
 
 
 def _manifest_path(value: object) -> Path | None:
@@ -313,7 +333,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = self.path.split("?", 1)[0]
-        if path not in ("/scan", "/scan/batch", "/ignores", "/compare", "/branches"):
+        if path not in ("/scan", "/scan/batch", "/ignores", "/compare", "/branches", "/locate-folder"):
             self.send_error(404)
             return
         payload, error = self._read_json(MAX_SCAN_BODY if path in ("/scan", "/scan/batch") else MAX_BODY)
@@ -324,6 +344,8 @@ class Handler(BaseHTTPRequestHandler):
             status, body = ignore_response("POST", payload)
         elif path == "/branches":
             status, body = branches_response(payload)
+        elif path == "/locate-folder":
+            status, body = locate_response(payload)
         elif path == "/compare":
             status, body = compare_response(payload)
         elif path == "/scan/batch":
