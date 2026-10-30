@@ -1,8 +1,0 @@
-{
-  "name": "supply-scan-handin",
-  "private": true,
-  "dependencies": {
-    "docx": "^9.5.0",
-    "pptxgenjs": "^4.0.1"
-  }
-}

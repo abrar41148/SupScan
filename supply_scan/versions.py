@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from functools import total_ordering
 
-_SEMVER = {"npm", "Go", "crates.io", "Pub"}
+_SEMVER = {"npm", "Go", "crates.io", "Pub", "Hex"}
 
 
 class _Bound:

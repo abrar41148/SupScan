@@ -1,6 +1,8 @@
 import json
 import os
+import shutil
 import stat
+import subprocess
 import tempfile
 import zipfile
 import threading
@@ -22,7 +24,7 @@ from supply_scan.acquire import (
     parse_remote_heads,
     sanitize_git_url,
 )
-from supply_scan.inventory import Package, dedupe, scan_tree
+from supply_scan.inventory import Package, dedupe, is_scan_manifest_relpath, scan_tree
 from supply_scan.cache import DiskCache, NullCache
 import supply_scan.match as match
 from supply_scan.match import Finding, annotate, cvss_v3_score, hydrate, query_osv, range_contains, version_tuple
@@ -35,7 +37,8 @@ from supply_scan.ignore import read_ignores, set_ignored
 from supply_scan.report import Snapshot, exit_code, render_json, render_text
 from supply_scan.serve import ignore_response
 from supply_scan.run import TargetSpec, run_batch, run_scan
-from supply_scan.serve import _branch_list_error, batch_scan_response, branches_response, scan_response
+from supply_scan.locate import find_folder
+from supply_scan.serve import _branch_list_error, batch_scan_response, branches_response, locate_response, scan_response
 
 
 CRITICAL = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
@@ -1809,6 +1812,284 @@ end
         self.assertEqual(len(merged), 1)
         self.assertFalse(merged[0].dev)
 
+    def test_added_lockfiles_are_manifests(self):
+        self.assertTrue(is_scan_manifest_relpath("gradle/verification-metadata.xml"))
+        self.assertFalse(is_scan_manifest_relpath("verification-metadata.xml"))
+        self.assertTrue(is_scan_manifest_relpath("app.deps.json"))
+        self.assertTrue(is_scan_manifest_relpath("pylock.django.toml"))
+        self.assertTrue(is_scan_manifest_relpath(".gitmodules"))
+        self.assertTrue(is_scan_manifest_relpath("Pipfile.lock"))
+
+    def test_conan_mix_haskell_and_bun_locks(self):
+        conan = json.dumps({
+            "version": "0.5",
+            "requires": ["zlib/1.2.13#rrev"],
+            "build_requires": ["cmake/3.27.0@"],
+            "python_requires": ["consumer/1.0"],
+        })
+        mix = """
+%{
+  "decimal": {:hex, :decimal, "2.1.1", "abc", [:ecto], [], "hexpm", "def"},
+  "git_pkg": {:git, "https://github.com/acme/git_pkg.git", "abc123", []},
+}
+"""
+        freeze = """
+constraints: any.base ==4.17.2.0,
+             any.bytestring ==0.11.5.3
+"""
+        stack = """
+snapshots:
+- completed:
+    hackage: bytestring-0.11.5.3@sha256:aaaa,1234
+"""
+        bun = json.dumps({
+            "lockfileVersion": 1,
+            "packages": {
+                "left-pad": ["left-pad@1.3.0", "", {}, "sha"],
+                "@scope/pkg": ["@scope/pkg@2.0.0", "", {}, "sha"],
+                "local": ["local@file:../local", "", {}, ""],
+                "gitpkg": ["gitpkg@1.0.0#abcdef", "", {}, ""],
+            },
+        })
+        package_json = json.dumps({
+            "dependencies": {"left-pad": "1.3.0"},
+            "devDependencies": {"@scope/pkg": "2.0.0"},
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "conan.lock").write_text(conan, encoding="utf-8")
+            (root / "mix.lock").write_text(mix, encoding="utf-8")
+            (root / "cabal.project.freeze").write_text(freeze, encoding="utf-8")
+            (root / "stack.yaml.lock").write_text(stack, encoding="utf-8")
+            (root / "bun.lock").write_text(bun, encoding="utf-8")
+            (root / "package.json").write_text(package_json, encoding="utf-8")
+            found = { (pkg.ecosystem, pkg.name): pkg for pkg in scan_tree(root) }
+        zlib = found[("ConanCenter", "zlib")]
+        self.assertEqual(zlib.version, "1.2.13")
+        self.assertTrue(zlib.direct)
+        self.assertFalse(zlib.dev)
+        self.assertIsNone(zlib.unchecked_reason)
+        cmake = found[("ConanCenter", "cmake")]
+        self.assertTrue(cmake.dev)
+        self.assertEqual(found[("Hex", "decimal")].version, "2.1.1")
+        self.assertIn("git source", found[("Hex", "git_pkg")].unchecked_reason)
+        self.assertEqual(found[("Hackage", "bytestring")].version, "0.11.5.3")
+        self.assertEqual(found[("Hackage", "base")].version, "4.17.2.0")
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "cabal.project.freeze").write_text(
+                "index-state: hackage.haskell.org 2026-08-10T16:58:32Z\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(scan_tree(Path(tmp)), [])
+        left = found[("npm", "left-pad")]
+        self.assertEqual(left.version, "1.3.0")
+        self.assertTrue(left.direct)
+        self.assertFalse(left.dev)
+        scoped = found[("npm", "@scope/pkg")]
+        self.assertTrue(scoped.dev)
+        self.assertEqual(scoped.version, "2.0.0")
+        self.assertIn("path source", found[("npm", "local")].unchecked_reason)
+        self.assertIn("git source", found[("npm", "gitpkg")].unchecked_reason)
+
+    def test_bun_lock_allows_trailing_commas(self):
+        text = """
+{
+  "lockfileVersion": 1,
+  "packages": {
+    "left-pad": ["left-pad@1.3.0", "", {}, "sha",],
+  },
+}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "bun.lock").write_text(text, encoding="utf-8")
+            found = scan_tree(Path(tmp))
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].name, "left-pad")
+        self.assertEqual(found[0].version, "1.3.0")
+        self.assertIsNone(found[0].unchecked_reason)
+
+    def test_nuget_python_r_and_gems_locked(self):
+        deps = json.dumps({
+            "libraries": {
+                "Newtonsoft.Json/13.0.3": {"type": "package", "version": "13.0.3"},
+                "App/1.0.0": {"type": "project", "version": "1.0.0"},
+            }
+        })
+        packages_config = """
+<packages>
+  <package id="jQuery" version="3.7.1" targetFramework="net48" />
+</packages>
+"""
+        packages_lock = json.dumps({
+            "version": 1,
+            "dependencies": {
+                ".NETCoreApp,Version=v8.0": {
+                    "Serilog": {"type": "Direct", "requested": "3.1.1", "resolved": "3.1.1"},
+                }
+            },
+        })
+        pipfile = json.dumps({
+            "default": {"Requests": {"version": "==2.31.0"}},
+            "develop": {"pytest": {"version": "==8.1.1"}, "Requests": {"version": "==2.31.0"}},
+        })
+        pdm = """
+lock-version = "4.4"
+[[package]]
+name = "certifi"
+version = "2024.2.2"
+groups = ["default"]
+[[package]]
+name = "pytest"
+version = "8.1.1"
+groups = ["dev"]
+"""
+        pylock = """
+lock-version = "1.0"
+[[packages]]
+name = "idna"
+version = "3.6"
+[[packages]]
+name = "app"
+directory = { path = "." }
+[[packages]]
+name = "gitpkg"
+vcs = { type = "git", commit-id = "abc123" }
+"""
+        renv = json.dumps({
+            "Packages": {
+                "ggplot2": {"Package": "ggplot2", "Version": "3.5.0", "Repository": "CRAN"},
+                "localpkg": {"Package": "localpkg", "Version": "0.1.0", "Repository": "local"},
+            }
+        })
+        gems = """
+GEM
+  remote: https://rubygems.org/
+  specs:
+    rake (13.1.0)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  rake
+
+BUNDLED WITH
+   2.4.0
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "deps.json").write_text(deps, encoding="utf-8")
+            (root / "editor.deps.json").write_text("{}", encoding="utf-8")
+            (root / "packages.config").write_text(packages_config, encoding="utf-8")
+            (root / "packages.lock.json").write_text(packages_lock, encoding="utf-8")
+            (root / "Pipfile.lock").write_text(pipfile, encoding="utf-8")
+            (root / "pdm.lock").write_text(pdm, encoding="utf-8")
+            (root / "pylock.toml").write_text(pylock, encoding="utf-8")
+            (root / "pyproject.toml").write_text("[project]\nname='app'\n", encoding="utf-8")
+            (root / "renv.lock").write_text(renv, encoding="utf-8")
+            (root / "gems.locked").write_text(gems, encoding="utf-8")
+            found = {(pkg.ecosystem, pkg.name): pkg for pkg in scan_tree(root)}
+        self.assertEqual(found[("NuGet", "Newtonsoft.Json")].version, "13.0.3")
+        self.assertNotIn(("NuGet", "App"), found)
+        self.assertNotIn(("NuGet", "editor.deps.json"), found)
+        self.assertEqual(found[("NuGet", "jQuery")].version, "3.7.1")
+        self.assertTrue(found[("NuGet", "jQuery")].direct)
+        self.assertEqual(found[("NuGet", "Serilog")].version, "3.1.1")
+        requests = found[("PyPI", "requests")]
+        self.assertEqual(requests.version, "2.31.0")
+        self.assertFalse(requests.dev)
+        self.assertTrue(found[("PyPI", "pytest")].dev)
+        self.assertEqual(found[("PyPI", "certifi")].version, "2024.2.2")
+        self.assertTrue(found[("PyPI", "certifi")].direct)
+        self.assertEqual(found[("PyPI", "idna")].version, "3.6")
+        self.assertIn("git source", found[("PyPI", "gitpkg")].unchecked_reason)
+        self.assertNotIn(("PyPI", "app"), found)
+        self.assertEqual(found[("CRAN", "ggplot2")].version, "3.5.0")
+        self.assertIn("not a CRAN release", found[("CRAN", "localpkg")].unchecked_reason)
+        self.assertEqual(found[("RubyGems", "rake")].version, "13.1.0")
+        self.assertIsNone(found[("RubyGems", "rake")].unchecked_reason)
+
+    def test_dart_config_and_extra_gradle_locks(self):
+        package_config = json.dumps({
+            "configVersion": 2,
+            "packages": [
+                {"name": "collection", "rootUri": "file:///cache/hosted/pub.dev/collection-1.18.0"},
+                {"name": "app", "rootUri": "../"},
+            ],
+        })
+        buildscript = "com.google.guava:guava:31.1-jre=classpath\n"
+        verification = """
+<verification-metadata>
+  <components>
+    <component group="org.slf4j" name="slf4j-api" version="2.0.9"/>
+  </components>
+</verification-metadata>
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dart = root / ".dart_tool"
+            dart.mkdir()
+            (dart / "package_config.json").write_text(package_config, encoding="utf-8")
+            (root / "buildscript-gradle.lockfile").write_text(buildscript, encoding="utf-8")
+            gradle = root / "gradle"
+            gradle.mkdir()
+            (gradle / "verification-metadata.xml").write_text(verification, encoding="utf-8")
+            (root / "build.gradle").write_text("dependencies {}", encoding="utf-8")
+            found = {(pkg.ecosystem, pkg.name): pkg for pkg in scan_tree(root)}
+        self.assertEqual(found[("Pub", "collection")].version, "1.18.0")
+        self.assertIsNone(found[("Pub", "collection")].unchecked_reason)
+        self.assertIn("path source", found[("Pub", "app")].unchecked_reason)
+        self.assertEqual(found[("Maven", "com.google.guava:guava")].version, "31.1-jre")
+        self.assertEqual(found[("Maven", "org.slf4j:slf4j-api")].version, "2.0.9")
+        self.assertNotIn(("Maven", "build.gradle"), found)
+
+    def test_broken_new_lock_does_not_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "conan.lock").write_text("{", encoding="utf-8")
+            found = scan_tree(Path(tmp))
+        self.assertEqual(len(found), 1)
+        self.assertIn("could not parse", found[0].unchecked_reason)
+
+    def test_gitmodules_without_a_commit_is_unchecked(self):
+        text = """
+[submodule "third_party/libfoo"]
+    path = third_party/libfoo
+    url = git@github.com:example/libfoo.git
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, ".gitmodules").write_text(text, encoding="utf-8")
+            found = scan_tree(Path(tmp))
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].ecosystem, "GIT")
+        self.assertEqual(found[0].name, "https://github.com/example/libfoo")
+        self.assertEqual(found[0].unchecked_reason, "git commit was not read")
+
+    @unittest.skipUnless(shutil.which("git"), "git is not on PATH")
+    def test_vendored_checkout_records_its_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vendor = root / "third_party" / "libfoo"
+            vendor.mkdir(parents=True)
+            (vendor / "README").write_text("hi", encoding="utf-8")
+            env = os.environ.copy()
+            env["GIT_AUTHOR_NAME"] = "test"
+            env["GIT_AUTHOR_EMAIL"] = "test@example.com"
+            env["GIT_COMMITTER_NAME"] = "test"
+            env["GIT_COMMITTER_EMAIL"] = "test@example.com"
+            def git(*args):
+                subprocess.run(["git", *args], cwd=vendor, check=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            git("init")
+            git("remote", "add", "origin", "https://github.com/example/libfoo.git")
+            git("add", "README")
+            git("commit", "-m", "init")
+            sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=vendor, env=env, text=True).strip()
+            found = {pkg.name: pkg for pkg in scan_tree(root)}
+        pinned = found["https://github.com/example/libfoo"]
+        self.assertEqual(pinned.ecosystem, "GIT")
+        self.assertEqual(pinned.version, sha)
+        self.assertIsNone(pinned.unchecked_reason)
+        self.assertTrue(pinned.direct)
+
 
 class OsvZipTests(unittest.TestCase):
     def test_read_advisory_from_cached_zip(self):
@@ -3112,6 +3393,41 @@ class BatchScanTests(unittest.TestCase):
             self.assertEqual(len(results), 2)
             self.assertEqual(len(index), 2)
             self.assertEqual(len({row["id"] for row in index}), 2)
+
+
+class LocateFolderTests(unittest.TestCase):
+    def test_finds_the_folder_whose_lockfiles_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            good = root / "a" / "app"
+            other = root / "b" / "app"
+            for folder, text in ((good, "12345"), (other, "123")):
+                folder.mkdir(parents=True)
+                (folder / "package-lock.json").write_text(text)
+            found = find_folder("APP", [("package-lock.json", 5)], roots=[root])
+        self.assertEqual(found, [good])
+
+    def test_skips_dependency_folders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "node_modules" / "app").mkdir(parents=True)
+            self.assertEqual(find_folder("app", [], roots=[root]), [])
+
+    def test_response_validates_name_and_passes_sizes(self):
+        seen = {}
+
+        def finder(name, manifests):
+            seen["args"] = (name, manifests)
+            return [Path("C:/x/app")]
+
+        status, body = locate_response(
+            {"name": "app", "files": [{"path": "go.mod", "size": 7}, {"path": "../x/go.mod", "size": 1}]},
+            finder,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(seen["args"], ("app", [("go.mod", 7)]))
+        self.assertEqual(len(body["paths"]), 1)
+        self.assertEqual(locate_response({"name": "a/b", "files": []}, finder)[0], 400)
 
 
 def _finding(osv_id, severity="high", kind="vulnerability"):
