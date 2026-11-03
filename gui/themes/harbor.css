@@ -1,0 +1,30 @@
+/* Harbor: calm light teal. */
+html[data-theme="harbor"] {
+  --scheme: light;
+  --bg: #e9f0f2;
+  --surface: #f9fbfc;
+  --surface-2: #eef4f6;
+  --text: #14232b;
+  --text-mute: #53656f;
+  --border: #d3dfe3;
+  --border-strong: #7a909b;
+  --accent: #0c6b62;
+  --accent-ink: #f9fbfc;
+  --accent-soft: #dcefec;
+  --danger: #a32020;
+  --danger-soft: #f8e3e1;
+  --ok: #0c6b62;
+  --ok-soft: #dcefec;
+  --sev-critical: #a8201a;
+  --sev-high: #b34710;
+  --sev-medium: #85600a;
+  --sev-low: #3f6070;
+  --sev-malware: #7a1f5c;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 1px 2px rgb(20 50 60 / 0.06), 0 8px 24px rgb(20 50 60 / 0.06);
+  --density: 1;
+  --text-scale: 1;
+}

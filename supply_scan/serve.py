@@ -28,6 +28,17 @@ from supply_scan.run import MAX_BATCH_TARGETS, TargetSpec, run_batch, run_scan, 
 from supply_scan.scans import list_scans, load_scan, save_scan
 
 PAGE = Path(__file__).resolve().parent.parent / "gui" / "index.html"
+GUI_DIR = PAGE.parent
+
+
+def gui_stylesheet(name: str) -> Path | None:
+    """Return a .css file inside gui/ for a request path, or None."""
+    if not name.endswith(".css"):
+        return None
+    candidate = (GUI_DIR / name).resolve()
+    if GUI_DIR.resolve() not in candidate.parents or not candidate.is_file():
+        return None
+    return candidate
 MAX_BODY = 1_000_000
 MAX_SCAN_BODY = 64_000_000
 _MAX_MANIFESTS = 2000
@@ -320,12 +331,21 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(200, report)
             return
-        if path not in ("/", "/index.html"):
+        content_type = "text/html; charset=utf-8"
+        if path.startswith("/gui/"):
+            asset = gui_stylesheet(path.removeprefix("/gui/"))
+            if asset is None:
+                self.send_error(404)
+                return
+            body = asset.read_bytes()
+            content_type = "text/css; charset=utf-8"
+        elif path in ("/", "/index.html"):
+            body = PAGE.read_bytes()
+        else:
             self.send_error(404)
             return
-        body = PAGE.read_bytes()
         self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

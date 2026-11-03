@@ -1,0 +1,30 @@
+/* Midnight: dark slate with a mint accent. */
+html[data-theme="midnight"] {
+  --scheme: dark;
+  --bg: #0b1318;
+  --surface: #121d24;
+  --surface-2: #18262f;
+  --text: #e3edf0;
+  --text-mute: #93a8b2;
+  --border: #223540;
+  --border-strong: #52707f;
+  --accent: #3ec9b0;
+  --accent-ink: #06201b;
+  --accent-soft: #123833;
+  --danger: #ff8a80;
+  --danger-soft: #3a1c1c;
+  --ok: #3ec9b0;
+  --ok-soft: #123833;
+  --sev-critical: #ff8a80;
+  --sev-high: #ffa05c;
+  --sev-medium: #e6c15a;
+  --sev-low: #8fb3c4;
+  --sev-malware: #e08bd0;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 10 14 / 0.35);
+  --density: 1;
+  --text-scale: 1;
+}

@@ -1,0 +1,30 @@
+/* Signal: security console. Near-black, amber, dense. */
+html[data-theme="signal"] {
+  --scheme: dark;
+  --bg: #0c0d0f;
+  --surface: #141619;
+  --surface-2: #1b1e22;
+  --text: #e6e8eb;
+  --text-mute: #9aa1a9;
+  --border: #272b31;
+  --border-strong: #565e67;
+  --accent: #f2a93b;
+  --accent-ink: #1a1100;
+  --accent-soft: #2e2410;
+  --danger: #ff7b72;
+  --danger-soft: #3a1a18;
+  --ok: #6fd08c;
+  --ok-soft: #14301d;
+  --sev-critical: #ff6b6b;
+  --sev-high: #ff9f43;
+  --sev-medium: #f2d04b;
+  --sev-low: #8ea3b5;
+  --sev-malware: #d98cf0;
+  --font-ui: "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
+  --radius: 5px;
+  --radius-sm: 3px;
+  --shadow: 0 1px 0 rgb(255 255 255 / 0.03) inset;
+  --density: 0.85;
+  --text-scale: 0.95;
+}

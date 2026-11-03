@@ -2797,6 +2797,18 @@ class CacheTests(unittest.TestCase):
             self.assertIsNone(cache.get_advisory("GHSA-1"))
 
 
+class GuiStylesheetTests(unittest.TestCase):
+    def test_only_css_inside_gui_is_served(self):
+        from supply_scan.serve import gui_stylesheet
+
+        self.assertIsNotNone(gui_stylesheet("base.css"))
+        self.assertIsNotNone(gui_stylesheet("themes/harbor.css"))
+        self.assertIsNone(gui_stylesheet("index.html"))
+        self.assertIsNone(gui_stylesheet("../pyproject.toml"))
+        self.assertIsNone(gui_stylesheet("../gui/../README.css"))
+        self.assertIsNone(gui_stylesheet("themes/missing.css"))
+
+
 class RunScanTests(unittest.TestCase):
     def test_page_scan_matches_the_cli_json(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3393,6 +3405,25 @@ class BatchScanTests(unittest.TestCase):
             self.assertEqual(len(results), 2)
             self.assertEqual(len(index), 2)
             self.assertEqual(len({row["id"] for row in index}), 2)
+
+    def test_save_scan_records_counts_in_the_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            save_scan({"target": "a", "counts": {"packages": 7, "vulnerable": 2}}, root)
+            save_scan({"target": "b"}, root)
+            rows = {row["target"]: row for row in list_scans(root)}
+            self.assertEqual((rows["a"]["packages"], rows["a"]["vulnerable"]), (7, 2))
+            self.assertIsNone(rows["b"]["packages"])
+
+    def test_list_scans_backfills_legacy_entries_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = save_scan({"target": "old", "counts": {"packages": 5, "vulnerable": 1}}, root)
+            index_path = root / "index.json"
+            legacy = [{key: value for key, value in record.items() if key not in ("packages", "vulnerable")}]
+            index_path.write_text(json.dumps(legacy), encoding="utf-8")
+            self.assertEqual(list_scans(root)[0]["packages"], 5)
+            self.assertEqual(json.loads(index_path.read_text(encoding="utf-8"))[0]["vulnerable"], 1)
 
 
 class LocateFolderTests(unittest.TestCase):

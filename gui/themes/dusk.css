@@ -1,0 +1,30 @@
+/* Dusk: soft blue-grey dark, rose accent, generous and round. */
+html[data-theme="dusk"] {
+  --scheme: dark;
+  --bg: #161a23;
+  --surface: #1e2330;
+  --surface-2: #262c3b;
+  --text: #e9ebf2;
+  --text-mute: #a2a9bd;
+  --border: #2f3547;
+  --border-strong: #5f6a88;
+  --accent: #f08fa8;
+  --accent-ink: #2a0d16;
+  --accent-soft: #3a2230;
+  --danger: #ff8f8f;
+  --danger-soft: #3b1f25;
+  --ok: #7fd6b0;
+  --ok-soft: #1c3a31;
+  --sev-critical: #ff8fa0;
+  --sev-high: #ffab7a;
+  --sev-medium: #f0d27a;
+  --sev-low: #9fb2d6;
+  --sev-malware: #e29cf0;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
+  --radius: 20px;
+  --radius-sm: 12px;
+  --shadow: 0 2px 4px rgb(0 0 0 / 0.25), 0 12px 32px rgb(5 8 18 / 0.35);
+  --density: 1.12;
+  --text-scale: 1.02;
+}

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "supply-scan-serve",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "supply_scan.serve", "--port", "8765"],
+      "port": 8765
+    }
+  ]
+}
