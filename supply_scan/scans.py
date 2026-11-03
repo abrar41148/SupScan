@@ -37,8 +37,25 @@ def _write_index(root: Path, entries: list[dict]) -> None:
     _index_path(root).write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
 
 
+def _counts(report: dict) -> dict:
+    counts = report.get("counts")
+    counts = counts if isinstance(counts, dict) else {}
+    return {"packages": counts.get("packages"), "vulnerable": counts.get("vulnerable")}
+
+
 def list_scans(root: Path | None = None) -> list[dict]:
-    return _read_index(scans_dir() if root is None else root)
+    root = scans_dir() if root is None else root
+    entries = _read_index(root)
+    stale = [entry for entry in entries if "packages" not in entry]
+    if stale:
+        with _save_lock:
+            # re-read under the lock so a concurrent save_scan isn't overwritten
+            entries = _read_index(root)
+            for entry in entries:
+                if "packages" not in entry:
+                    entry.update(_counts(load_scan(entry["id"], root) or {}))
+            _write_index(root, entries)
+    return entries
 
 
 def load_scan(scan_id: str, root: Path | None = None) -> dict | None:
@@ -65,6 +82,7 @@ def save_scan(report: dict, root: Path | None = None) -> dict:
             "commit": report.get("commit"),
             "branch": report.get("branch"),
             "saved_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            **_counts(report),
         }
         (root / f"{scan_id}.json").write_text(json.dumps(report) + "\n", encoding="utf-8")
         index = _read_index(root)

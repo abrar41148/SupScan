@@ -1,738 +1,41 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="harbor">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>supply-scan</title>
-  <style>
-    :root {
-      --field: #e4ecee;
-      --sheet: #f6fafb;
-      --ink: #17242c;
-      --mute: #5a6c76;
-      --rule: #c5d2d7;
-      --line: #7d919a;
-      --fix: #0c6b62;
-      --fix-ink: #f6fafb;
-      --sans: "Segoe UI", "IBM Plex Sans", sans-serif;
-      --mono: "Cascadia Mono", "IBM Plex Mono", ui-monospace, monospace;
-      color-scheme: light;
-    }
-
-    * { box-sizing: border-box; }
-
-    html { background: var(--field); }
-
-    body {
-      margin: 0;
-      min-height: 100dvh;
-      background: var(--field);
-      color: var(--ink);
-      font-family: var(--sans);
-      font-size: 1rem;
-      line-height: 1.45;
-    }
-
-    button:focus,
-    input:focus,
-    select:focus,
-    summary:focus {
-      outline: 2px solid var(--fix);
-      outline-offset: 2px;
-    }
-
-    .scan:focus {
-      outline-color: var(--ink);
-    }
-
-    .top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      height: 4rem;
-      padding: 0 1.5rem 0 1rem;
-      border-bottom: 1px solid var(--rule);
-      background: var(--sheet);
-    }
-
-    .name {
-      margin: 0;
-      font-family: var(--mono);
-      font-size: 1rem;
-      font-weight: 600;
-      letter-spacing: 0;
-    }
-
-    button,
-    input,
-    select {
-      font: inherit;
-      color: inherit;
-    }
-
-    input,
-    select {
-      accent-color: var(--fix);
-    }
-
-    .scan {
-      border: 0;
-      background: var(--fix);
-      color: var(--fix-ink);
-      padding: 0.55rem 1.15rem;
-      cursor: pointer;
-    }
-
-    .scan:active { transform: translateY(1px); }
-
-    .scan:disabled {
-      cursor: default;
-      opacity: 0.55;
-    }
-
-    .open-wrap { position: relative; width: fit-content; }
-
-    .open {
-      display: inline-block;
-      border: 1px solid var(--line);
-      background: var(--sheet);
-      padding: 0.45rem 0.7rem;
-      cursor: pointer;
-    }
-
-    button.open {
-      font: inherit;
-      color: inherit;
-    }
-
-    button.open:disabled {
-      cursor: default;
-      opacity: 0.55;
-    }
-
-    .report-actions,
-    .target-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      align-items: center;
-    }
-
-    .target-row input { flex: 1; min-width: 12rem; }
-
-    .target-grid {
-      width: 100%;
-      border-collapse: collapse;
-      table-layout: fixed;
-    }
-
-    .target-grid th {
-      text-align: left;
-      font-weight: 600;
-      font-size: 0.92rem;
-      padding: 0 0.35rem 0.35rem 0;
-    }
-
-    .target-grid td {
-      padding: 0.25rem 0.35rem 0.25rem 0;
-      vertical-align: top;
-    }
-
-    .target-grid td:last-child {
-      width: 2.25rem;
-      padding-right: 0;
-    }
-
-    .target-grid col.repo-col { width: 52%; }
-    .target-grid col.branch-col { width: auto; }
-
-    .target-grid input {
-      width: 100%;
-      min-width: 0;
-    }
-
-    .target-grid select {
-      width: 100%;
-      min-width: 0;
-    }
-
-    .row-remove {
-      border: 1px solid var(--line);
-      background: var(--sheet);
-      padding: 0.35rem 0.45rem;
-      cursor: pointer;
-      line-height: 1;
-    }
-
-    .row-remove:disabled {
-      opacity: 0.45;
-      cursor: default;
-    }
-
-    .row-error {
-      margin: 0.15rem 0 0;
-      color: #8a2020;
-      font-size: 0.85rem;
-      line-height: 1.3;
-      overflow-wrap: anywhere;
-    }
-
-    .target-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      align-items: center;
-      margin-top: 0.35rem;
-    }
-
-    .batch-summary {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 0.75rem;
-      font-size: 0.95rem;
-    }
-
-    .batch-summary th,
-    .batch-summary td {
-      text-align: left;
-      padding: 0.45rem 0.65rem 0.45rem 0;
-      border-bottom: 1px solid var(--rule);
-      vertical-align: top;
-    }
-
-    .batch-open {
-      border: 1px solid var(--line);
-      background: var(--sheet);
-      padding: 0.25rem 0.55rem;
-      cursor: pointer;
-      font: inherit;
-    }
-
-    .batch-result-error {
-      color: #8a2020;
-      font-size: 0.88rem;
-      max-width: 14rem;
-      line-height: 1.3;
-    }
-
-    .file {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      opacity: 0;
-      cursor: pointer;
-    }
-
-    .file:focus { outline: none; }
-
-    .open-wrap:focus-within .open {
-      outline: 2px solid var(--fix);
-      outline-offset: 2px;
-    }
-
-    .workspace {
-      display: grid;
-      grid-template-columns: minmax(22rem, 28rem) minmax(0, 1fr);
-      gap: 2.5rem;
-      width: 100%;
-      margin: 0;
-      padding: 1.75rem 1.5rem 3rem 1rem;
-      box-sizing: border-box;
-    }
-
-    .rail h2,
-    .panel h2 {
-      margin: 0 0 0.35rem;
-      font-size: 1.35rem;
-      font-weight: 650;
-      letter-spacing: 0;
-      line-height: 1.2;
-    }
-
-    .help,
-    .quiet {
-      margin: 0;
-      color: var(--mute);
-      font-size: 0.92rem;
-    }
-
-    form { display: grid; gap: 1rem; }
-
-    .field { display: grid; gap: 0.35rem; }
-
-    label { font-size: 0.95rem; }
-
-    input[type="text"],
-    select {
-      width: 100%;
-      border: 1px solid var(--line);
-      background: var(--sheet);
-      padding: 0.45rem 0.55rem;
-      border-radius: 0;
-    }
-
-    .check {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.5rem;
-      font-size: 0.95rem;
-    }
-
-    .check input { margin-top: 0.2rem; }
-
-    .block { margin-top: 1.75rem; }
-
-    .counts {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 0.35rem 1rem;
-      margin: 0.75rem 0 0;
-    }
-
-    .counts dt { margin: 0; }
-
-    .counts dd {
-      margin: 0;
-      font-family: var(--mono);
-      text-align: right;
-    }
-
-    .compare { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
-
-    .compare-go { margin-top: 0.75rem; }
-
-    .panel[hidden] { display: none; }
-
-    .panel p { max-width: 42rem; }
-
-    .meter {
-      display: grid;
-      gap: 1.15rem;
-      margin-top: 1.5rem;
-      max-width: 36rem;
-    }
-
-    .meter-row[hidden] { display: none; }
-
-    .meter-label {
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      margin: 0 0 0.4rem;
-      color: var(--mute);
-    }
-
-    .meter-label span:last-child {
-      font-family: var(--mono);
-      color: var(--ink);
-      text-align: right;
-    }
-
-    .meter-track {
-      height: 1.15rem;
-      overflow: hidden;
-      background: var(--sheet);
-      border: 1px solid var(--rule);
-    }
-
-    .meter-fill {
-      height: 100%;
-      width: 0;
-      background: var(--fix);
-    }
-
-    .meter-track.waiting .meter-fill {
-      width: 38%;
-      animation: scan-wait 1.2s ease-in-out infinite;
-    }
-
-    @keyframes scan-wait {
-      from { transform: translateX(-120%); }
-      to { transform: translateX(280%); }
-    }
-
-    #commit {
-      font-family: var(--mono);
-      font-size: 0.85rem;
-    }
-
-    .packages {
-      margin: 0;
-      padding: 0;
-      list-style: none;
-    }
-
-    .package {
-      border-top: 1px solid var(--rule);
-    }
-
-    .packages > .package:first-child { border-top: 0; }
-
-    .package.flat { padding: 1.15rem 0; }
-
-    .packages > .package.flat:first-child { padding-top: 0; }
-
-    .fold > summary {
-      display: grid;
-      grid-template-columns: 1rem minmax(0, 1fr);
-      grid-template-areas:
-        "mark name"
-        "mark tally";
-      gap: 0.1rem 0.6rem;
-      align-items: baseline;
-      padding: 0.85rem 0;
-      cursor: pointer;
-      list-style: none;
-    }
-
-    .fold > summary::-webkit-details-marker { display: none; }
-
-    .fold > summary::before {
-      content: "▸";
-      grid-area: mark;
-      color: var(--mute);
-      font-family: var(--mono);
-    }
-
-    .fold[open] > summary::before { content: "▾"; }
-
-    .summary-name { grid-area: name; }
-
-    .summary-tally {
-      grid-area: tally;
-      color: var(--mute);
-      font-size: 0.92rem;
-    }
-
-    .eco {
-      margin-left: 0.65rem;
-      color: var(--mute);
-      font-family: var(--sans);
-      font-size: 0.92rem;
-      font-weight: 400;
-    }
-
-    .versions {
-      margin: 0 0 0.35rem 1.6rem;
-      padding: 0;
-      list-style: none;
-    }
-
-    .version { border-top: 1px solid var(--rule); }
-
-    .versions > .version:first-child { border-top: 0; }
-
-    .version-body { padding: 0 0 0.85rem 1.6rem; }
-
-    @media (min-width: 768px) {
-      .fold > summary {
-        grid-template-columns: 1rem minmax(0, 1fr) auto;
-        grid-template-areas: "mark name tally";
-        gap: 0.75rem;
-      }
-    }
-
-    .pkg-name {
-      margin: 0;
-      font-family: var(--mono);
-      font-size: 1.05rem;
-      font-weight: 600;
-      overflow-wrap: anywhere;
-    }
-
-    .meta {
-      margin: 0.25rem 0 0;
-      color: var(--mute);
-      font-size: 0.92rem;
-    }
-
-    .manifest {
-      font-family: var(--mono);
-      font-size: 0.82rem;
-      overflow-wrap: anywhere;
-    }
-
-    .finding { margin-top: 0.9rem; }
-
-    .finding p,
-    .upgrade { margin: 0.15rem 0 0; }
-
-    .summary { max-width: 65ch; }
-
-    .id {
-      font-family: var(--mono);
-      font-size: 0.92rem;
-    }
-
-    a.id {
-      color: inherit;
-      text-decoration-line: underline;
-      text-decoration-thickness: 1px;
-      text-underline-offset: 0.16em;
-    }
-
-    a.id:hover {
-      color: var(--fix);
-    }
-
-    a.id:focus-visible {
-      outline: 2px solid var(--fix);
-      outline-offset: 2px;
-    }
-
-    .fix-ver {
-      font-family: var(--mono);
-      color: var(--fix);
-      font-size: 1.35rem;
-      font-weight: 650;
-    }
-
-    .upgrade .fix-ver { font-size: 1.05rem; }
-
-    .ignore {
-      margin-top: 0.65rem;
-      border: 1px solid var(--line);
-      background: var(--sheet);
-      padding: 0.3rem 0.65rem;
-      cursor: pointer;
-    }
-
-    .ignore:active { transform: translateY(1px); }
-
-    .ignore:disabled { cursor: default; }
-
-    .is-ignored { color: var(--mute); }
-
-    .is-ignored .fix-ver {
-      color: var(--mute);
-      font-size: 1.05rem;
-    }
-
-    .ignored-word {
-      margin: 0 0 0.2rem;
-      color: var(--ink);
-      font-size: 0.92rem;
-    }
-
-    body.open-only .is-ignored { display: none; }
-
-    body.open-only .version:has(.finding):not(:has(.finding:not(.is-ignored))),
-    body.open-only .package:has(.finding):not(:has(.finding:not(.is-ignored))) {
-      display: none;
-    }
-
-    .panel h2.group-title { margin: 2rem 0 0.85rem; }
-
-    .panel h2.group-title:first-child { margin-top: 0; }
-
-    .relation { margin: 0; font-weight: 500; }
-
-    table.types {
-      width: 100%;
-      margin: 0.9rem 0 0;
-      border-collapse: collapse;
-    }
-
-    table.types th,
-    table.types td {
-      padding: 0.45rem 0;
-      border-top: 1px solid var(--rule);
-      text-align: left;
-      font-weight: 400;
-      vertical-align: baseline;
-    }
-
-    table.types th { color: var(--mute); }
-
-    table.types .count {
-      text-align: right;
-      font-family: var(--mono);
-      font-variant-numeric: tabular-nums;
-    }
-
-    .compare-board {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      column-gap: 10px;
-      margin-top: 1.25rem;
-    }
-
-    .compare-board > .heads { display: contents; }
-
-    .compare-board > .pair {
-      display: grid;
-      grid-column: 1 / -1;
-      grid-template-columns: subgrid;
-      grid-template-rows: auto auto auto;
-    }
-
-    .compare-board .cell > .fold {
-      display: grid;
-      grid-template-rows: subgrid;
-      grid-row: 1 / -1;
-    }
-
-    .compare-board .fold > summary {
-      grid-template-columns: 1rem minmax(0, 1fr);
-      grid-template-areas:
-        "mark name"
-        "mark tally";
-    }
-
-    .compare-board .cell > .fold > summary {
-      display: grid;
-      grid-template-rows: subgrid;
-      grid-row: 1 / span 2;
-    }
-
-    .compare-board .cell > .fold > summary .summary-name,
-    .compare-board .cell > .fold > summary .summary-tally {
-      grid-area: auto;
-    }
-
-    .compare-board .cell > .fold > summary .summary-name { grid-row: 1; grid-column: 2; }
-
-    .compare-board .cell > .fold > summary .summary-tally { grid-row: 2; grid-column: 2; }
-
-    .compare-board .cell > .fold > summary::before { grid-row: 1 / span 2; grid-column: 1; }
-
-    .compare-board .cell > .fold > .version-body { grid-row: 3; }
-
-    .compare-board .cell > .fold:not([open]) > .version-body { display: none; }
-
-    .compare-board .summary-name {
-      display: block;
-      min-width: 0;
-    }
-
-    .compare-board .pkg-name { overflow-wrap: normal; }
-
-    .compare-board .heads p {
-      margin: 0 0 0.45rem;
-      font-weight: 500;
-      overflow-wrap: anywhere;
-    }
-
-    .compare-board .cell {
-      display: grid;
-      grid-template-rows: subgrid;
-      grid-row: 1 / -1;
-      background: var(--sheet);
-      min-width: 0;
-      border-right: 1px solid var(--rule);
-      border-bottom: 1px solid var(--rule);
-      border-left: 1px solid var(--rule);
-    }
-
-    .compare-board > .pair:first-of-type .cell { border-top: 1px solid var(--rule); }
-
-    .compare-board .cell.blank { min-height: 3rem; }
-
-    .compare-board .none {
-      margin: 0;
-      padding: 0.85rem 0.75rem;
-      color: var(--mute);
-    }
-
-    .compare-board > .missing { display: contents; }
-
-    .compare-board .missing p {
-      margin: 0.85rem 0 0;
-      color: var(--mute);
-      font-size: 0.92rem;
-    }
-
-    .compare-board .side-label { display: none; }
-
-    .compare-board .fold > summary { padding: 0.85rem 0.75rem; }
-
-    .compare-board .version-body { padding: 0 0.85rem 0.85rem 1.6rem; }
-
-    .compare-board .move { margin: 0 0 0.35rem; color: var(--mute); }
-
-    .compare-board .move span {
-      font-family: var(--mono);
-      color: var(--ink);
-    }
-
-    .compare-board .cleared { color: var(--fix); }
-
-    .sr {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      padding: 0;
-      margin: -1px;
-      overflow: hidden;
-      clip: rect(0, 0, 0, 0);
-      white-space: nowrap;
-      border: 0;
-    }
-
-    @media (max-width: 560px) {
-      .compare-board { display: block; }
-      .compare-board > .heads { display: none; }
-      .compare-board > .missing {
-        display: grid;
-        gap: 0.35rem;
-        margin-top: 0.85rem;
-      }
-      .compare-board > .pair {
-        display: grid;
-        grid-template-columns: 1fr;
-        grid-template-rows: none;
-        margin-top: 0.85rem;
-      }
-      .compare-board .cell,
-      .compare-board .cell > .fold,
-      .compare-board .cell > .fold > summary,
-      .compare-board .cell > .fold > .version-body {
-        display: block;
-        grid-row: auto;
-        grid-column: auto;
-      }
-      .compare-board .side-label {
-        display: block;
-        margin: 0;
-        padding: 0.55rem 0.75rem 0;
-        font-weight: 500;
-        overflow-wrap: anywhere;
-      }
-      .compare-board > .pair:first-of-type .cell { border-top: 0; }
-      .compare-board .cell { border-top: 1px solid var(--rule); }
-    }
-
-    @media (max-width: 767px) {
-      .top { padding: 0 1rem; }
-      .workspace {
-        grid-template-columns: 1fr;
-        gap: 2rem;
-        padding: 1.25rem 1rem 2.5rem;
-      }
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      .scan:active,
-      .ignore:active { transform: none; }
-      .meter-track.waiting .meter-fill {
-        animation: none;
-        transform: none;
-        width: 100%;
-        opacity: 0.35;
-      }
-    }
-  </style>
+  <script>
+    (function () {
+      var theme = "";
+      try { theme = localStorage.getItem("supply-scan-theme") || ""; } catch (err) {}
+      if (!theme) theme = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "midnight" : "harbor";
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+  <link rel="stylesheet" href="/gui/base.css">
+  <link rel="stylesheet" href="/gui/themes/harbor.css">
+  <link rel="stylesheet" href="/gui/themes/midnight.css">
+  <link rel="stylesheet" href="/gui/themes/paper.css">
+  <link rel="stylesheet" href="/gui/themes/signal.css">
+  <link rel="stylesheet" href="/gui/themes/dusk.css">
+  <link rel="stylesheet" href="/gui/themes/brutal.css">
 </head>
-<body>
+<body data-page="scan">
   <header class="top">
     <p class="name">supply-scan</p>
-    <button class="scan" type="button" id="scan">Scan</button>
+    <nav class="tabs" aria-label="Pages">
+      <a href="#/scan" data-page="scan">Scan</a>
+      <a href="#/history" data-page="history">History</a>
+      <a href="#/compare" data-page="compare">Compare</a>
+    </nav>
+    <div class="top-actions">
+      <label class="theme-pick"><span>Theme</span><select id="theme"></select></label>
+      <button class="scan" type="button" id="scan">Scan</button>
+    </div>
   </header>
 
   <main class="workspace">
-    <section class="rail" aria-label="Scan setup">
+    <section class="rail" data-view="scan" aria-label="Scan setup">
       <form id="setup">
         <div class="field">
           <span id="report-label">Report</span>
@@ -782,33 +85,41 @@
       <div class="block">
         <h2>Counts</h2>
         <dl class="counts">
-          <dt>Packages</dt><dd id="count-packages">-</dd>
-          <dt>Vulnerable</dt><dd id="count-vulnerable">-</dd>
-          <dt>Unchecked</dt><dd id="count-unchecked">-</dd>
-          <dt id="commit-label" hidden>Commit</dt>
-          <dd id="commit" hidden></dd>
-          <dt id="result-label" hidden>Result</dt>
-          <dd id="result" hidden></dd>
+          <div class="stat"><dt>Packages</dt><dd id="count-packages">-</dd></div>
+          <div class="stat" id="stat-vulnerable"><dt>Vulnerable</dt><dd id="count-vulnerable">-</dd></div>
+          <div class="stat"><dt>Unchecked</dt><dd id="count-unchecked">-</dd></div>
+          <div class="stat-line"><dt id="commit-label" hidden>Commit</dt><dd id="commit" hidden></dd></div>
+          <div class="stat-line"><dt id="result-label" hidden>Result</dt><dd id="result" hidden></dd></div>
         </dl>
       </div>
 
-      <div class="block">
-        <h2>Scan history</h2>
-        <div class="compare">
-          <div class="field">
-            <label for="history">Saved scan</label>
-            <select id="history" disabled>
-              <option>No saved scans</option>
-            </select>
-          </div>
-        </div>
-        <button class="scan compare-go" type="button" id="open-history">Open</button>
-        <p class="help">Saved scans stay here. Open one to see that report again.</p>
-      </div>
+    </section>
 
-      <div class="block">
-        <h2>Compare</h2>
-        <div class="compare">
+    <section class="page" id="page-history" data-view="history" aria-label="History">
+      <div class="page-head">
+        <h2>History</h2>
+        <p class="help">Saved scans stay here. Open one to see its full report.</p>
+        <label class="history-sort">Sort by
+          <select id="history-sort">
+            <option value="date-desc">Date, descending</option>
+            <option value="date-asc">Date, ascending</option>
+            <option value="packages-desc">Packages, descending</option>
+            <option value="packages-asc">Packages, ascending</option>
+            <option value="vulns-desc">Vulnerabilities, descending</option>
+            <option value="vulns-asc">Vulnerabilities, ascending</option>
+            <option value="name-asc">Name, ascending</option>
+            <option value="name-desc">Name, descending</option>
+          </select>
+        </label>
+      </div>
+      <ul class="history-list" id="history-list"></ul>
+    </section>
+
+    <section class="page" id="page-compare" data-view="compare" aria-label="Compare">
+      <div class="page-card">
+        <h2>Compare scans</h2>
+        <p class="help">A package is the ecosystem and name, so a new version stays on that package.</p>
+        <div class="compare-form">
           <div class="field">
             <label for="current">This scan</label>
             <select id="current" disabled>
@@ -821,14 +132,22 @@
               <option>No saved scans</option>
             </select>
           </div>
+          <div class="compare-buttons">
+            <button class="scan" type="button" id="compare">Compare</button>
+            <button class="open" type="button" id="save-compare" disabled>Save comparison</button>
+          </div>
         </div>
-        <button class="scan compare-go" type="button" id="compare">Compare</button>
-        <p class="help">A package is the ecosystem and name, so a new version stays on that package.</p>
       </div>
-
+      <div class="compare-out">
+        <div class="panel" id="compare-hint">
+          <h2>Nothing to compare yet</h2>
+          <p>Pick two saved scans above, then press Compare.</p>
+        </div>
+        <div class="panel" id="compare-result" hidden aria-live="polite"></div>
+      </div>
     </section>
 
-    <section aria-live="polite">
+    <section id="results" data-view="scan" aria-live="polite">
       <div class="panel" id="state-ready">
         <h2>No scan yet</h2>
         <p>Open a supply-scan report, or enter a target and scan.</p>
@@ -839,19 +158,19 @@
         <p id="scan-status">Reading the tree and asking OSV.</p>
         <div class="meter">
           <div class="meter-row">
-            <p class="meter-label"><span>Files</span><span id="scan-files-value">—</span></p>
+            <p class="meter-label"><span>Files</span><span id="scan-files-value">-</span></p>
             <div class="meter-track waiting" id="scan-files-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Counting files" aria-label="Files read" aria-busy="true">
               <div class="meter-fill"></div>
             </div>
           </div>
           <div class="meter-row">
-            <p class="meter-label"><span>Size</span><span id="scan-size-value">—</span></p>
+            <p class="meter-label"><span>Size</span><span id="scan-size-value">-</span></p>
             <div class="meter-track waiting" id="scan-size-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Counting size" aria-label="Size read" aria-busy="true">
               <div class="meter-fill"></div>
             </div>
           </div>
           <div class="meter-row" id="scan-packages" hidden>
-            <p class="meter-label"><span id="scan-packages-name">Packages</span><span id="scan-packages-value">—</span></p>
+            <p class="meter-label"><span id="scan-packages-name">Packages</span><span id="scan-packages-value">-</span></p>
             <div class="meter-track" id="scan-packages-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Asking OSV" aria-label="Packages asked" aria-busy="false">
               <div class="meter-fill"></div>
             </div>
@@ -930,6 +249,7 @@
       const node = document.getElementById("result");
       node.hidden = !shown;
       node.textContent = code === 1 ? "Fail" : code === 0 ? "Pass" : code === 2 ? "Error" : "";
+      node.dataset.result = node.textContent;
     }
 
     function exitLabel(code) {
@@ -950,6 +270,8 @@
         panel.hidden = name !== state;
       }
       if (tally === "keep") return;
+      const vulnerable = tally && Number(tally.vulnerable) > 0;
+      document.getElementById("stat-vulnerable").classList.toggle("alert", Boolean(vulnerable));
       const value = tally || (state === "empty"
         ? { packages: 0, vulnerable: 0, unchecked: 0 }
         : null);
@@ -1008,9 +330,9 @@
       document.getElementById("scan-status").textContent = "Reading the tree and asking OSV.";
       document.getElementById("scan-packages").hidden = true;
       document.getElementById("scan-packages-name").textContent = "Packages";
-      setMeter("scan-files-bar", "scan-files-value", 0, "—", true);
-      setMeter("scan-size-bar", "scan-size-value", 0, "—", true);
-      setMeter("scan-packages-bar", "scan-packages-value", 0, "—", true);
+      setMeter("scan-files-bar", "scan-files-value", 0, "-", true);
+      setMeter("scan-size-bar", "scan-size-value", 0, "-", true);
+      setMeter("scan-packages-bar", "scan-packages-value", 0, "-", true);
     }
 
     function scanTargetTag(event) {
@@ -1030,8 +352,8 @@
           ? "Cloning " + repoName(event.target) + (event.branch ? " @ " + event.branch : "")
             + (event.target_total > 1 ? " (" + (Number(event.target_index) + 1) + " of " + event.target_total + ")." : ".")
           : "Cloning the repository.";
-        setMeter("scan-files-bar", "scan-files-value", 0, "—", true);
-        setMeter("scan-size-bar", "scan-size-value", 0, "—", true);
+        setMeter("scan-files-bar", "scan-files-value", 0, "-", true);
+        setMeter("scan-size-bar", "scan-size-value", 0, "-", true);
         return;
       }
       if (event.phase === "count") {
@@ -1242,6 +564,12 @@
       return anchor;
     }
 
+    function severityBadge(level) {
+      const key = String(level).toLowerCase();
+      const known = ["critical", "high", "medium", "low", "malware"].includes(key) ? key : "unknown";
+      return line("span", "sev sev-" + known, key);
+    }
+
     function addFindings(parent, pkg) {
       const findings = [...(pkg.vulns || [])].sort(compareFinding);
       for (const finding of findings) {
@@ -1260,8 +588,8 @@
             head.append(osvLink(related));
           }
         }
-        if (finding.kind === "malware") head.append(document.createTextNode("  malware"));
-        head.append(document.createTextNode("  " + (finding.severity || "unknown")));
+        if (finding.kind === "malware") head.append(severityBadge("malware"));
+        head.append(severityBadge(finding.severity || "unknown"));
         block.append(head);
         if (finding.summary) block.append(line("p", "summary", finding.summary));
         if (finding.fixed_in) {
@@ -1302,6 +630,7 @@
       const first = versions[0];
       const item = document.createElement("li");
       item.className = "package";
+      item.dataset.sev = worstLabel(versions.flatMap((pkg) => pkg.vulns || []));
       const fold = document.createElement("details");
       fold.className = "fold";
       const summary = document.createElement("summary");
@@ -1453,10 +782,8 @@
       fillingScans = true;
       const current = document.getElementById("current");
       const previous = document.getElementById("previous");
-      const history = document.getElementById("history");
       const keepPrevious = previous.value;
-      const keepHistory = history.value;
-      for (const select of [current, previous, history]) {
+      for (const select of [current, previous]) {
         select.replaceChildren();
         if (!entries.length) {
           select.disabled = true;
@@ -1480,12 +807,76 @@
       if (keepPrevious && [...previous.options].some((option) => option.value === keepPrevious)) {
         previous.value = keepPrevious;
       }
-      if (currentId && [...history.options].some((option) => option.value === currentId)) {
-        history.value = currentId;
-      } else if (keepHistory && [...history.options].some((option) => option.value === keepHistory)) {
-        history.value = keepHistory;
-      }
       fillingScans = false;
+      renderHistory(entries);
+    }
+
+    let historyEntries = [];
+
+    const HISTORY_SORTS = {
+      date: (a, b) => String(a.saved_at || "").localeCompare(String(b.saved_at || "")),
+      packages: (a, b) => (a.packages ?? -1) - (b.packages ?? -1),
+      vulns: (a, b) => (a.vulnerable ?? -1) - (b.vulnerable ?? -1),
+      name: (a, b) => (repoBranch(a.target) || a.target || "").localeCompare(
+        repoBranch(b.target) || b.target || "", undefined, { sensitivity: "base", numeric: true }),
+    };
+
+    function sortHistory(entries, mode) {
+      const [key, dir] = mode.split("-");
+      const compare = HISTORY_SORTS[key];
+      const sign = dir === "asc" ? 1 : -1;
+      // saved_at breaks ties so equal counts/names stay newest-first
+      return [...entries].sort((a, b) => sign * compare(a, b) || HISTORY_SORTS.date(b, a));
+    }
+
+    function setupHistorySort() {
+      const select = document.getElementById("history-sort");
+      try {
+        const saved = localStorage.getItem("supply-scan-history-sort");
+        if (saved && [...select.options].some((option) => option.value === saved)) select.value = saved;
+      } catch (err) {}
+      select.addEventListener("change", () => {
+        try { localStorage.setItem("supply-scan-history-sort", select.value); } catch (err) {}
+        renderHistory(historyEntries);
+      });
+    }
+
+    function renderHistory(entries) {
+      historyEntries = entries;
+      const list = document.getElementById("history-list");
+      list.replaceChildren();
+      if (!entries.length) {
+        const empty = document.createElement("li");
+        empty.className = "history-empty";
+        empty.append(line("h3", "", "No saved scans yet"), line("p", "", "Run a scan and it will be saved here."));
+        list.append(empty);
+        return;
+      }
+      const sorted = sortHistory(entries, document.getElementById("history-sort").value);
+      for (const entry of sorted) {
+        const item = document.createElement("li");
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "history-row";
+        const who = document.createElement("span");
+        who.className = "history-who";
+        who.append(
+          line("span", "history-name", repoBranch(entry.target) || "scan"),
+          line("span", "history-path", entry.target || ""),
+        );
+        const when = String(entry.saved_at || "").replace("T", " ").slice(0, 16);
+        row.append(
+          who,
+          line("span", "chip", entry.branch ? String(entry.branch) : "no branch"),
+          line("span", "history-counts", entry.packages == null ? "" :
+            `${entry.packages} packages · ${entry.vulnerable || 0} vulnerable`),
+          line("span", "history-when", when + (entry.commit ? "  " + String(entry.commit).slice(0, 8) : "")),
+          line("span", "history-go", "Open"),
+        );
+        row.addEventListener("click", () => openHistory(entry.id));
+        item.append(row);
+        list.append(item);
+      }
     }
 
     async function loadScans(currentId) {
@@ -1655,11 +1046,22 @@
       return body;
     }
 
+    function showCompareResult() {
+      document.getElementById("compare-hint").hidden = true;
+      document.getElementById("compare-result").hidden = false;
+    }
+
+    function compareMessage(title, body) {
+      const panel = document.getElementById("compare-result");
+      panel.replaceChildren(line("h2", "", title), line("p", "", body));
+      showCompareResult();
+    }
+
     function renderComparison(data) {
       lastComparison = data;
       viewKind = "comparison";
-      document.getElementById("save").disabled = false;
-      const panel = panels.report;
+      document.getElementById("save-compare").disabled = false;
+      const panel = document.getElementById("compare-result");
       panel.replaceChildren();
       const currentSide = compareSide(data, "current");
       const previousSide = compareSide(data, "previous");
@@ -1694,7 +1096,7 @@
       else panel.append(line("p", "quiet", "No dependency changes."));
 
       if (!rows.length) {
-        show("report", "keep");
+        showCompareResult();
         return;
       }
       const board = document.createElement("div");
@@ -1744,12 +1146,12 @@
       missing.className = "missing";
       const missingLine = (side, names) => {
         const text = names.length ? names.join(", ") : "none";
-        return line("p", "", side + ": no equivalent — " + text);
+        return line("p", "", side + ": no equivalent - " + text);
       };
       missing.append(missingLine(currentHeading, missingHere), missingLine(previousHeading, missingBefore));
       board.append(missing);
       panel.append(board);
-      show("report", "keep");
+      showCompareResult();
     }
 
     async function onCompareChange() {
@@ -1757,7 +1159,7 @@
       const current = document.getElementById("current").value;
       const previous = document.getElementById("previous").value;
       if (!current || !previous || current === previous) {
-        if (lastReport) renderReport(lastReport, lastName);
+        compareMessage("Pick two different scans", "Choose a saved scan in each box.");
         return;
       }
       try {
@@ -1768,12 +1170,12 @@
         });
         const payload = await response.json();
         if (!response.ok) {
-          showError("Compare failed.", (payload && payload.error) || "Pick two saved scans.");
+          compareMessage("Compare failed.", (payload && payload.error) || "Pick two saved scans.");
           return;
         }
         renderComparison(payload);
       } catch (err) {
-        showError("Compare failed.", "The comparison could not be reached.");
+        compareMessage("Compare failed.", "The comparison could not be reached.");
       }
     }
 
@@ -1787,7 +1189,6 @@
       }
       lastReport = data;
       lastName = filename;
-      lastComparison = null;
       viewKind = "report";
       document.getElementById("save").disabled = false;
       const vulnerable = data.packages.filter((pkg) => pkg && pkg.vulns && pkg.vulns.length);
@@ -1846,7 +1247,6 @@
     function renderBatchSummary(payload) {
       lastBatchReports = payload.reports || [];
       lastReport = null;
-      lastComparison = null;
       viewKind = "batch";
       document.getElementById("save").disabled = true;
       const body = document.getElementById("batch-summary-body");
@@ -1867,7 +1267,7 @@
         targetCell.textContent = report.target || "-";
         targetCell.title = report.target || "";
         row.append(targetCell);
-        row.append(line("td", "", report.branch || "—"));
+        row.append(line("td", "", report.branch || "-"));
         row.append(line("td", "", String(counts.packages ?? "-")));
         row.append(line("td", "", String(counts.vulnerable ?? "-")));
         const resultCell = document.createElement("td");
@@ -1877,7 +1277,9 @@
           const detail = report.error_detail || report.error;
           if (detail && detail !== report.error) resultCell.title = detail;
         } else {
-          resultCell.textContent = exitLabel(report.exit_code);
+          const pill = line("span", "pill", exitLabel(report.exit_code));
+          pill.dataset.result = pill.textContent;
+          resultCell.append(pill);
         }
         row.append(resultCell);
         const openCell = document.createElement("td");
@@ -2533,21 +1935,23 @@
     }
 
     document.getElementById("save").addEventListener("click", () => {
-      if (viewKind === "comparison" && lastComparison) {
-        const documentBody = comparisonDocument();
-        writeJson(comparisonFileName(documentBody.current || {}, documentBody.previous || {}), documentBody);
-        return;
-      }
       if (!lastReport) return;
       const copy = Object.assign({}, lastReport);
       delete copy.scan_id;
       writeJson(reportFileName(lastReport), copy);
     });
 
+    document.getElementById("save-compare").addEventListener("click", () => {
+      if (!lastComparison) return;
+      const documentBody = comparisonDocument();
+      writeJson(comparisonFileName(documentBody.current || {}, documentBody.previous || {}), documentBody);
+    });
+
     function openDocument(data, filename) {
       if (data && data.kind === "supply-scan-comparison" && Array.isArray(data.rows)) {
         renderComparison(data);
         reportHelp.textContent = filename;
+        location.hash = "#/compare";
         return;
       }
       renderReport(data, filename);
@@ -2580,14 +1984,14 @@
       onCompareChange();
     });
 
-    document.getElementById("open-history").addEventListener("click", async () => {
-      const id = document.getElementById("history").value;
+    async function openHistory(id) {
       if (!id) return;
       try {
         const response = await fetch("/scans/" + id);
         const payload = await response.json();
         if (!response.ok) {
           showError("Could not open that scan.", (payload && payload.error) || "That scan was not saved.");
+          location.hash = "#/scan";
           return;
         }
         payload.scan_id = id;
@@ -2596,9 +2000,53 @@
       } catch (err) {
         showError("Could not open that scan.", "The saved scan could not be reached.");
       }
-    });
+      location.hash = "#/scan";
+    }
 
     show("ready");
+    const THEMES = [
+      { id: "harbor", label: "Harbor" },
+      { id: "midnight", label: "Midnight" },
+      { id: "paper", label: "Paper" },
+      { id: "signal", label: "Signal" },
+      { id: "dusk", label: "Dusk" },
+      { id: "brutal", label: "Brutal" },
+    ];
+
+    function setupThemePicker() {
+      const select = document.getElementById("theme");
+      for (const theme of THEMES) {
+        const option = line("option", "", theme.label);
+        option.value = theme.id;
+        select.append(option);
+      }
+      select.value = document.documentElement.dataset.theme;
+      select.addEventListener("change", () => {
+        document.documentElement.dataset.theme = select.value;
+        try { localStorage.setItem("supply-scan-theme", select.value); } catch (err) {}
+      });
+    }
+
+    function route() {
+      const name = location.hash.replace(/^#\/?/, "").split("/")[0];
+      const pages = ["scan", "history", "compare"];
+      const page = pages.includes(name) ? name : "scan";
+      const from = document.body.dataset.page;
+      if (from && from !== page) {
+        document.body.dataset.dir = pages.indexOf(page) > pages.indexOf(from) ? "forward" : "back";
+      }
+      document.body.dataset.page = page;
+      for (const tab of document.querySelectorAll(".tabs a")) {
+        if (tab.dataset.page === page) tab.setAttribute("aria-current", "page");
+        else tab.removeAttribute("aria-current");
+      }
+      window.scrollTo(0, 0);
+    }
+
+    window.addEventListener("hashchange", route);
+    route();
+    setupThemePicker();
+    setupHistorySort();
     loadIgnores();
     loadScans();
   </script>

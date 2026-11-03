@@ -1,0 +1,30 @@
+/* Paper: high contrast, flat, compact, monospace-forward. */
+html[data-theme="paper"] {
+  --scheme: light;
+  --bg: #eceef0;
+  --surface: #fafafb;
+  --surface-2: #f0f1f3;
+  --text: #111418;
+  --text-mute: #4d5560;
+  --border: #cfd3d8;
+  --border-strong: #6b727b;
+  --accent: #1d4ed8;
+  --accent-ink: #fafafb;
+  --accent-soft: #e3e9fb;
+  --danger: #b42318;
+  --danger-soft: #fbe4e1;
+  --ok: #17663a;
+  --ok-soft: #e2f3e8;
+  --sev-critical: #b42318;
+  --sev-high: #b34710;
+  --sev-medium: #7a5a00;
+  --sev-low: #475569;
+  --sev-malware: #86198f;
+  --font-ui: "Cascadia Code", "Cascadia Mono", ui-monospace, monospace;
+  --font-mono: "Cascadia Code", "Cascadia Mono", ui-monospace, monospace;
+  --radius: 3px;
+  --radius-sm: 2px;
+  --shadow: none;
+  --density: 0.8;
+  --text-scale: 0.94;
+}
