@@ -1184,6 +1184,93 @@ body[data-page="compare"] .workspace {
 /* History */
 .history-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.7rem; }
 
+/* Compare diff summary */
+.added { --chg: var(--ok); }
+.removed { --chg: var(--danger); }
+.version_changed { --chg: var(--accent); }
+.advisory_changed { --chg: var(--sev-medium); }
+.unchanged { --chg: var(--text-mute); }
+
+.diff-tallies { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.7rem; margin: 0.9rem 0; }
+.diff-tally {
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.8rem 1rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--text-mute);
+  border-radius: var(--radius-sm);
+}
+.diff-tally strong { font-size: 1.8rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.diff-tally span { color: var(--text-mute); font-size: 0.88rem; }
+.diff-tally.bad { border-left-color: var(--danger); background: var(--danger-soft); }
+.diff-tally.bad strong { color: var(--danger); }
+.diff-tally.good { border-left-color: var(--ok); background: var(--ok-soft); }
+.diff-tally.good strong { color: var(--ok); }
+
+.diff-bar { display: flex; gap: 2px; height: 0.7rem; overflow: hidden; border-radius: 999px; background: var(--border); }
+.diff-seg { background: var(--chg); min-width: 4px; }
+.diff-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.7rem 0 0; padding: 0; list-style: none; }
+.diff-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.2rem 0.75rem;
+  font-size: 0.88rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.diff-chip .dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--chg); }
+.diff-chip strong { font-variant-numeric: tabular-nums; }
+
+.compare-board > .pair[class*=" "] { border-left: 4px solid var(--chg); padding-left: 0.6rem; border-radius: var(--radius-sm); }
+.compare-board > .pair.added,
+.compare-board > .pair.removed,
+.compare-board > .pair.advisory_changed { background: color-mix(in srgb, var(--chg) 7%, transparent); }
+
+.history-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1.1rem; margin-top: 0.8rem; }
+.history-tools input[type="text"] { flex: 1 1 14rem; min-width: 0; max-width: 24rem; }
+.history-tools .history-sort { margin-top: 0; }
+.history-check { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--text-mute); font-size: 0.9rem; cursor: pointer; }
+
+.history-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; align-items: stretch; }
+.history-item.pinned .history-row { border-color: var(--accent); }
+
+.history-actions { display: flex; align-items: center; gap: 0.35rem; }
+.history-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-width: 2.2rem;
+  height: 2.2rem;
+  padding: 0 0.55rem;
+  font-size: 0.85rem;
+  color: var(--text-mute);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.history-action:hover { color: var(--accent); border-color: var(--accent); }
+.history-action svg { flex: none; }
+.history-action.is-on svg { fill: currentColor; }
+.history-action.is-on { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.history-action.danger:hover,
+.history-action.armed { color: var(--danger); background: var(--danger-soft); border-color: var(--danger); }
+
+.history-group { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.history-group > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 1rem;
+  padding: 0.8rem 1.15rem;
+  cursor: pointer;
+}
+.history-group > .history-list { padding: 0 0.7rem 0.7rem; }
+
 .history-row {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1fr) auto;
@@ -1282,6 +1369,8 @@ body[data-page="compare"] .workspace {
   .tabs { order: 3; width: 100%; }
   .tabs a { flex: 1; text-align: center; }
   .history-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .history-item { grid-template-columns: minmax(0, 1fr); }
+  .history-actions { flex-direction: row; }
   .history-when { grid-column: 1; }
   .history-go { grid-column: 2; grid-row: 1; }
   .compare-form { grid-template-columns: 1fr; }

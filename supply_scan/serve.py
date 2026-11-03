@@ -25,7 +25,7 @@ from supply_scan.locate import find_folder
 from supply_scan.ignore import read_ignores, set_ignored
 from supply_scan.match import MatchError
 from supply_scan.run import MAX_BATCH_TARGETS, TargetSpec, run_batch, run_scan, run_tree
-from supply_scan.scans import list_scans, load_scan, save_scan
+from supply_scan.scans import delete_scan, list_scans, load_scan, save_scan, set_pinned
 
 PAGE = Path(__file__).resolve().parent.parent / "gui" / "index.html"
 GUI_DIR = PAGE.parent
@@ -69,6 +69,21 @@ def compare_response(payload: dict | None) -> tuple[int, dict]:
     if current is None or previous is None:
         return 400, {"error": "Pick two saved scans."}
     return 200, compare_reports(current, previous)
+
+
+def delete_response(payload: dict | None) -> tuple[int, dict]:
+    scan_id = str(payload.get("id") or "") if isinstance(payload, dict) else ""
+    if not delete_scan(scan_id):
+        return 404, {"error": "That scan was not saved."}
+    return 200, {"scans": list_scans()}
+
+
+def pin_response(payload: dict | None) -> tuple[int, dict]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("pinned"), bool):
+        return 400, {"error": "Say whether the scan is pinned."}
+    if not set_pinned(str(payload.get("id") or ""), payload["pinned"]):
+        return 404, {"error": "That scan was not saved."}
+    return 200, {"scans": list_scans()}
 
 
 def _branch_list_error(message: str) -> str:
@@ -353,7 +368,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = self.path.split("?", 1)[0]
-        if path not in ("/scan", "/scan/batch", "/ignores", "/compare", "/branches", "/locate-folder"):
+        if path not in (
+            "/scan", "/scan/batch", "/ignores", "/compare", "/branches", "/locate-folder",
+            "/scans/delete", "/scans/pin",
+        ):
             self.send_error(404)
             return
         payload, error = self._read_json(MAX_SCAN_BODY if path in ("/scan", "/scan/batch") else MAX_BODY)
@@ -368,6 +386,10 @@ class Handler(BaseHTTPRequestHandler):
             status, body = locate_response(payload)
         elif path == "/compare":
             status, body = compare_response(payload)
+        elif path == "/scans/delete":
+            status, body = delete_response(payload)
+        elif path == "/scans/pin":
+            status, body = pin_response(payload)
         elif path == "/scan/batch":
             if not isinstance(payload, dict) or "targets" not in payload:
                 self._send(400, {"error": "Send targets with target and optional branch."})

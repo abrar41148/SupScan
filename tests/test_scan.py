@@ -31,8 +31,8 @@ from supply_scan.match import Finding, annotate, cvss_v3_score, hydrate, query_o
 from supply_scan.osv_zip import read_advisory_from_zip
 from supply_scan.cli import main
 from supply_scan.compare import compare_reports
-from supply_scan.scans import list_scans, load_scan, save_scan
-from supply_scan.serve import compare_response
+from supply_scan.scans import delete_scan, list_scans, load_scan, save_scan, set_pinned
+from supply_scan.serve import compare_response, delete_response, pin_response
 from supply_scan.ignore import read_ignores, set_ignored
 from supply_scan.report import Snapshot, exit_code, render_json, render_text
 from supply_scan.serve import ignore_response
@@ -3414,6 +3414,43 @@ class BatchScanTests(unittest.TestCase):
             rows = {row["target"]: row for row in list_scans(root)}
             self.assertEqual((rows["a"]["packages"], rows["a"]["vulnerable"]), (7, 2))
             self.assertIsNone(rows["b"]["packages"])
+
+    def test_set_pinned_round_trips_through_the_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = save_scan({"target": "a"}, root)
+            self.assertTrue(set_pinned(record["id"], True, root))
+            self.assertTrue(list_scans(root)[0]["pinned"])
+            self.assertTrue(set_pinned(record["id"], False, root))
+            self.assertNotIn("pinned", list_scans(root)[0])
+            self.assertFalse(set_pinned("0" * 32, True, root))
+
+    def test_delete_scan_removes_report_and_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            keep = save_scan({"target": "keep"}, root)
+            gone = save_scan({"target": "gone"}, root)
+            self.assertTrue(delete_scan(gone["id"], root))
+            self.assertEqual([row["id"] for row in list_scans(root)], [keep["id"]])
+            self.assertFalse((root / f"{gone['id']}.json").exists())
+            self.assertIsNone(load_scan(gone["id"], root))
+            self.assertFalse(delete_scan(gone["id"], root))
+            self.assertFalse(delete_scan("../" + keep["id"], root))
+            self.assertTrue((root / f"{keep['id']}.json").exists())
+
+    def test_delete_and_pin_responses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("supply_scan.scans.scans_dir", return_value=root):
+                record = save_scan({"target": "a"})
+                self.assertEqual(pin_response({"id": record["id"]})[0], 400)
+                self.assertEqual(pin_response({"id": "x", "pinned": True})[0], 404)
+                status, body = pin_response({"id": record["id"], "pinned": True})
+                self.assertEqual(status, 200)
+                self.assertTrue(body["scans"][0]["pinned"])
+                self.assertEqual(delete_response(None)[0], 404)
+                status, body = delete_response({"id": record["id"]})
+                self.assertEqual((status, body["scans"]), (200, []))
 
     def test_list_scans_backfills_legacy_entries_once(self):
         with tempfile.TemporaryDirectory() as tmp:
