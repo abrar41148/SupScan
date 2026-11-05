@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import shutil
 import stat
 import subprocess
@@ -34,8 +35,11 @@ from supply_scan.compare import compare_reports
 from supply_scan.scans import delete_scan, list_scans, load_scan, save_scan, set_pinned
 from supply_scan.serve import compare_response, delete_response, pin_response
 from supply_scan.ignore import read_ignores, set_ignored
-from supply_scan.report import Snapshot, exit_code, render_json, render_text
-from supply_scan.serve import ignore_response
+from supply_scan import ansi, banner
+from supply_scan.progress import Progress
+from supply_scan.markdown import render_markdown
+from supply_scan.report import Snapshot, exit_code, render_json, render_text, snapshot_from_report
+from supply_scan.serve import ignore_response, markdown_response
 from supply_scan.run import TargetSpec, run_batch, run_scan
 from supply_scan.locate import find_folder
 from supply_scan.serve import _branch_list_error, batch_scan_response, branches_response, locate_response, scan_response
@@ -2220,6 +2224,16 @@ class MatchTests(unittest.TestCase):
         prod.vulns = [Finding("MAL-1", None, "unknown", "", None, "malware", True)]
         self.assertEqual(exit_code([prod], strict=False), 1)
 
+    def test_exit_code_fail_on_threshold(self):
+        pkg = Package("npm", "left-pad", "1.0.0", True, False, "package-lock.json")
+        pkg.vulns = [Finding("GHSA-m", None, "medium", "", "1.0.1", "vulnerability", True)]
+        self.assertEqual(exit_code([pkg], strict=False), 0)
+        self.assertEqual(exit_code([pkg], strict=False, fail_on="medium"), 1)
+        self.assertEqual(exit_code([pkg], strict=False, fail_on="critical"), 0)
+        self.assertEqual(exit_code([pkg], strict=True, fail_on="high"), 0)
+        pkg.vulns.append(Finding("MAL-1", None, "unknown", "", None, "malware", True))
+        self.assertEqual(exit_code([pkg], strict=False, fail_on="none"), 1)
+
     def _increasing(self, ecosystem, versions):
         keys = []
         for version in versions:
@@ -2797,16 +2811,35 @@ class CacheTests(unittest.TestCase):
             self.assertIsNone(cache.get_advisory("GHSA-1"))
 
 
-class GuiStylesheetTests(unittest.TestCase):
-    def test_only_css_inside_gui_is_served(self):
-        from supply_scan.serve import gui_stylesheet
+class PrefsTests(unittest.TestCase):
+    def test_prefs_keep_only_valid_values_and_merge(self):
+        from supply_scan.prefs import read_prefs, update_prefs
 
-        self.assertIsNotNone(gui_stylesheet("base.css"))
-        self.assertIsNotNone(gui_stylesheet("themes/harbor.css"))
-        self.assertIsNone(gui_stylesheet("index.html"))
-        self.assertIsNone(gui_stylesheet("../pyproject.toml"))
-        self.assertIsNone(gui_stylesheet("../gui/../README.css"))
-        self.assertIsNone(gui_stylesheet("themes/missing.css"))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nested" / "prefs.json"
+            self.assertEqual(read_prefs(path), {})
+            self.assertEqual(update_prefs({"theme": "oled", "accent": "#FF8800", "x": 1}, path),
+                             {"theme": "oled", "accent": "#ff8800"})
+            self.assertEqual(update_prefs({"theme": "../evil", "accent": "red"}, path),
+                             {"theme": "oled", "accent": "#ff8800"})
+            self.assertEqual(update_prefs({"theme": "paper"}, path)["accent"], "#ff8800")
+            self.assertEqual(read_prefs(path)["theme"], "paper")
+            self.assertEqual(update_prefs("nope", path)["theme"], "paper")
+
+
+class GuiStylesheetTests(unittest.TestCase):
+    def test_only_css_and_fonts_inside_gui_are_served(self):
+        from supply_scan.serve import gui_asset
+
+        self.assertIsNotNone(gui_asset("base.css"))
+        self.assertIsNotNone(gui_asset("themes/harbor.css"))
+        self.assertIsNotNone(gui_asset("fonts/geist-var.woff2"))
+        self.assertIsNone(gui_asset("index.html"))
+        self.assertIsNone(gui_asset("../pyproject.toml"))
+        self.assertIsNone(gui_asset("../gui/../README.css"))
+        self.assertIsNone(gui_asset("../supply_scan/../gui/fonts/../../x.woff2"))
+        self.assertIsNone(gui_asset("themes/missing.css"))
+        self.assertIsNone(gui_asset("fonts/missing.woff2"))
 
 
 class RunScanTests(unittest.TestCase):
@@ -3507,6 +3540,280 @@ def _finding(osv_id, severity="high", kind="vulnerability"):
         "fixed_in": "9.0.0",
         "kind": kind,
     }
+
+
+class MarkdownTests(unittest.TestCase):
+    def _pkg(self, name, version, severity, *, direct=True, dev=False, summary="s", kind="vulnerability",
+             fixed="9.9.9", vid=None, cve="CVE-2026-1"):
+        package = Package("npm", name, version, direct, dev, "package-lock.json")
+        package.recommend = fixed
+        package.vulns = [Finding(vid or f"GHSA-{name}", cve, severity, summary, fixed, kind, True)]
+        return package
+
+    def _snap(self, packages):
+        return Snapshot("https://example.com/r.git", "abcdef1234", "main", packages)
+
+    def test_fail_report_groups_versions_and_links_ids(self):
+        report = render_markdown(self._snap([
+            self._pkg("uuid", "8.3.2", "high", vid="GHSA-uuid"),
+            self._pkg("uuid", "9.0.1", "high", vid="GHSA-uuid"),
+            self._pkg("zod", "3.0.0", "critical", direct=False, vid="GHSA-zod"),
+        ]))
+        self.assertIn("# supply-scan: FAIL (exit 1)", report)
+        self.assertIn("2 packages fail (1 direct, 1 transitive)", report)
+        self.assertEqual(report.count("| uuid |"), 1)
+        self.assertIn("8.3.2, 9.0.1", report)
+        self.assertIn("[GHSA-uuid](https://osv.dev/vulnerability/GHSA-uuid) / [CVE-2026-1](https://osv.dev/vulnerability/CVE-2026-1)", report)
+        self.assertIn("<details><summary>uuid: 1 advisories across 2 version(s)</summary>", report)
+
+    def test_pass_report_has_no_tables(self):
+        report = render_markdown(self._snap([self._pkg("a", "1.0.0", "low")]))
+        self.assertIn("# supply-scan: PASS (exit 0)", report)
+        self.assertNotIn("| Package |", report)
+        self.assertIn("## Not listed above", report)
+
+    def test_strict_and_fail_on_follow_the_exit_code(self):
+        packages = [
+            self._pkg("a", "1.0.0", "medium"),
+            self._pkg("b", "1.0.0", "high", dev=True),
+            self._pkg("m", "1.0.0", "unknown", kind="malware", fixed=None),
+        ]
+        clean = [self._pkg("a", "1.0.0", "medium"), self._pkg("b", "1.0.0", "high", dev=True)]
+        for pkgs in (packages, clean):
+            for strict in (False, True):
+                for fail_on in (None, "critical", "medium", "none"):
+                    text = render_markdown(self._snap(pkgs), strict=strict, fail_on=fail_on)
+                    self.assertEqual(
+                        "FAIL (exit 1)" in text,
+                        exit_code(pkgs, strict, fail_on) == 1,
+                        (strict, fail_on),
+                    )
+        self.assertNotIn("| a |", render_markdown(self._snap(clean)))
+        self.assertIn("| a |", render_markdown(self._snap(clean), fail_on="medium"))
+        self.assertIn("| b |", render_markdown(self._snap(clean), strict=True))
+
+    def test_malware_is_listed_as_malware(self):
+        report = render_markdown(self._snap([self._pkg("m", "1.0.0", "unknown", kind="malware", vid="MAL-1")]))
+        self.assertIn("| malware |", report)
+
+    def test_pipes_and_newlines_do_not_break_cells(self):
+        report = render_markdown(self._snap([self._pkg("a", "1.0.0", "high", summary="x | y\nz")]))
+        row = next(line for line in report.splitlines() if line.startswith("| a |"))
+        self.assertEqual(row.count("|"), 7)
+        self.assertIn("x / y z", row)
+
+    def test_unchecked_packages_are_listed(self):
+        unchecked = Package("npm", "loose", None, True, False, "package.json", "no pinned version")
+        report = render_markdown(self._snap([unchecked]))
+        self.assertIn("PASS", report)
+        self.assertIn("1 packages could not be checked", report)
+        self.assertIn("loose (package.json): no pinned version", report)
+
+    def test_saved_report_renders_the_same_markdown(self):
+        snapshot = self._snap([
+            self._pkg("uuid", "8.3.2", "high", vid="GHSA-uuid"),
+            self._pkg("dev-tool", "1.0.0", "high", dev=True),
+        ])
+        report = json.loads(render_json(snapshot))
+        self.assertEqual(render_markdown(snapshot_from_report(report)), render_markdown(snapshot))
+
+    def test_markdown_response_uses_the_rule_the_report_was_scanned_with(self):
+        snapshot = self._snap([self._pkg("dev-tool", "1.0.0", "high", dev=True)])
+        report = json.loads(render_json(snapshot))
+        report["exit_code"] = 1
+        status, body = markdown_response({"report": report, "strict": False})
+        self.assertEqual(status, 200)
+        self.assertIn("FAIL (exit 1)", body["markdown"])
+        report["exit_code"] = 0
+        status, body = markdown_response({"report": report, "strict": True})
+        self.assertIn("PASS (exit 0)", body["markdown"])
+
+    def test_markdown_response_rejects_non_reports(self):
+        self.assertEqual(markdown_response(None)[0], 400)
+        self.assertEqual(markdown_response({"report": {"target": "x"}})[0], 400)
+
+
+class BannerTests(unittest.TestCase):
+    class _Stream(StringIO):
+        encoding = "utf-8"
+
+        def __init__(self, tty):
+            super().__init__()
+            self._tty = tty
+
+        def isatty(self):
+            return self._tty
+
+    def test_quiet_when_not_a_terminal(self):
+        stream = self._Stream(False)
+        self.assertFalse(banner.show(stream))
+        self.assertEqual(stream.getvalue(), "")
+
+    def test_quiet_in_ci_or_when_switched_off(self):
+        for name in ("CI", "SUPPLY_SCAN_NO_BANNER"):
+            with patch.dict(os.environ, {name: "1"}):
+                stream = self._Stream(True)
+                self.assertFalse(banner.show(stream))
+                self.assertEqual(stream.getvalue(), "")
+
+    def test_prints_on_a_terminal_and_the_gradient_is_random_per_run(self):
+        seen = set()
+        for seed in range(12):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("CI", None)
+                os.environ.pop("SUPPLY_SCAN_NO_BANNER", None)
+                os.environ.pop("NO_COLOR", None)
+                stream = self._Stream(True)
+                self.assertTrue(banner.show(stream, rng=random.Random(seed)))
+                seen.add(stream.getvalue())
+        self.assertGreater(len(seen), 1)
+        self.assertIn("\x1b[38;2;", next(iter(seen)))
+
+    def test_each_run_moves_to_the_next_gradient_and_wraps_around(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "banner.json"
+            seen = [banner.next_palette(state) for _ in range(len(banner.PALETTES) * 2)]
+            self.assertEqual(sorted(set(seen)), sorted(banner.PALETTES))
+            first = seen[: len(banner.PALETTES)]
+            self.assertEqual(sorted(first), sorted(banner.PALETTES))
+            self.assertEqual(seen[len(banner.PALETTES):], first)
+            for left, right in zip(seen, seen[1:]):
+                self.assertNotEqual(left, right)
+
+    def test_show_rotates_without_a_new_process(self):
+        stops = []
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "banner.json"
+            with patch.dict(os.environ, {}, clear=False):
+                for name in ("CI", "SUPPLY_SCAN_NO_BANNER", "NO_COLOR"):
+                    os.environ.pop(name, None)
+                for _ in range(3):
+                    stream = self._Stream(True)
+                    stops.append(banner.show(stream, state_path=state))
+        self.assertEqual(len(set(stops)), 3)
+
+    def test_unreadable_state_does_not_stop_the_banner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "banner.json"
+            state.write_text("not json", encoding="utf-8")
+            self.assertIn(banner.next_palette(state), banner.PALETTES)
+
+    def test_every_palette_fits_80_columns_and_plain_text_matches_the_art(self):
+        for number in banner.PALETTES:
+            plain = banner.render(number, color=False).splitlines()
+            self.assertTrue(all(len(line) <= 80 for line in plain))
+            self.assertIn("dependency vulnerability scanner", plain[-1])
+            self.assertEqual(plain[:-1], banner._BLOCK.strip("\n").split("\n"))
+
+
+class ProgressTests(unittest.TestCase):
+    class _Tty(StringIO):
+        encoding = "utf-8"
+
+        def isatty(self):
+            return True
+
+    def _bar(self, **kwargs):
+        stream = self._Tty()
+        return stream, Progress(stream, color=False, **kwargs)
+
+    def test_no_bar_when_not_a_terminal(self):
+        self.assertIsNone(Progress.create(StringIO()))
+
+    def test_running_phase_shows_percent_and_counts(self):
+        stream, bar = self._bar()
+        bar.update({"phase": "osv", "packages_done": 5, "packages_total": 20})
+        text = stream.getvalue()
+        self.assertIn("looking up packages", text)
+        self.assertIn("25%", text)
+        self.assertIn("5/20", text)
+
+    def test_finished_phase_stays_with_a_tick_and_the_next_one_starts(self):
+        stream, bar = self._bar()
+        bar.update({"phase": "read", "files_done": 3, "files_total": 3})
+        bar.update({"phase": "osv", "packages_done": 0, "packages_total": 10})
+        text = stream.getvalue()
+        self.assertIn("✓ reading manifests", text)
+        self.assertIn("100%", text)
+        self.assertIn("looking up packages", text)
+
+    def test_close_clears_the_running_line(self):
+        stream, bar = self._bar()
+        bar.update({"phase": "advisories", "advisories_done": 1, "advisories_total": 4})
+        bar.close()
+        self.assertTrue(stream.getvalue().endswith("\r\x1b[K"))
+
+    def test_other_stderr_output_is_printed_cleanly_and_the_bar_comes_back(self):
+        stream = self._Tty()
+        bar = Progress(stream, color=False)
+        bar.update({"phase": "osv", "packages_done": 1, "packages_total": 2})
+        with patch("sys.stderr", stream):
+            with bar:
+                import sys as _sys
+                print("osv: 3 cached, 0 fetched", file=_sys.stderr)
+        text = stream.getvalue()
+        self.assertIn("osv: 3 cached, 0 fetched\n", text)
+        self.assertGreater(text.count("looking up packages"), 1)
+
+    def test_batch_phases_are_labelled_by_target(self):
+        stream, bar = self._bar()
+        bar.update({"phase": "read", "files_done": 1, "files_total": 2, "target_index": 1, "target_total": 3})
+        self.assertIn("[2/3] reading manifests", stream.getvalue())
+
+
+class AnsiTests(unittest.TestCase):
+    class _Stream(StringIO):
+        def __init__(self, tty):
+            super().__init__()
+            self._tty = tty
+
+        def isatty(self):
+            return self._tty
+
+    def _text(self):
+        crit = Package("npm", "minimist", "1.2.0", True, False, "package-lock.json")
+        crit.vulns = [Finding("GHSA-a", "CVE-2021-1", "critical", "Prototype Pollution", "1.2.6", "vulnerability", True)]
+        crit.recommend = "1.2.6"
+        high = Package("npm", "lodash", "4.17.20", False, True, "package-lock.json")
+        high.vulns = [
+            Finding("GHSA-b", None, "high", "Injection", None, "vulnerability", True),
+            Finding("GHSA-c", None, "unknown", "No data", None, "vulnerability", True),
+        ]
+        bad = Package("npm", "evil", "1.0.0", True, False, "package-lock.json")
+        bad.vulns = [Finding("MAL-1", None, "unknown", "Malicious", None, "malware", True)]
+        loose = Package("npm", "loose", None, True, False, "package.json", "no pinned version")
+        snapshot = Snapshot("https://example.com/r.git", "abcdef1", "main", [crit, high, bad, loose])
+        return render_text(snapshot)
+
+    def test_stripping_the_colour_gives_back_the_plain_report(self):
+        text = self._text()
+        painted = ansi.colorize(text)
+        self.assertNotEqual(painted, text)
+        self.assertEqual(ansi.strip(painted), text)
+
+    def test_each_severity_has_its_own_colour(self):
+        painted = ansi.colorize(self._text())
+        for word in ("critical", "high", "unknown"):
+            self.assertIn(ansi.SEVERITY[word] + word, painted)
+        self.assertEqual(len(set(ansi.SEVERITY.values())), len(ansi.SEVERITY))
+        self.assertIn(ansi._MALWARE + "malware", painted)
+
+    def test_advisory_ids_are_clickable_links(self):
+        painted = ansi.colorize(self._text())
+        for vuln_id in ("GHSA-a", "CVE-2021-1", "MAL-1"):
+            self.assertIn("]8;;https://osv.dev/vulnerability/" + vuln_id, painted)
+        # the link wraps the id, and removing the codes still gives the plain report
+        self.assertEqual(ansi.strip(painted), self._text())
+
+    def test_no_colour_off_a_terminal_or_with_no_color(self):
+        self.assertFalse(ansi.use_color(self._Stream(False)))
+        with patch.dict(os.environ, {"NO_COLOR": "1"}):
+            self.assertFalse(ansi.use_color(self._Stream(True)))
+
+    def test_verdict_line(self):
+        self.assertIn("PASS", ansi.strip(ansi.verdict(0)))
+        self.assertIn("FAIL", ansi.strip(ansi.verdict(1)))
+        self.assertIn("ERROR", ansi.strip(ansi.verdict(2)))
 
 
 if __name__ == "__main__":

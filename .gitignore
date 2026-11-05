@@ -12,3 +12,7 @@ others/compare-*
 others/compare_reports.py
 others/diagrams/
 others/
+
+supply-scan-report-*.json
+supply-scan-report-*.md
+.cc/

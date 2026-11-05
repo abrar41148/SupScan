@@ -20,8 +20,8 @@ html[data-theme="brutal"] {
   --sev-medium: #7a5a00;
   --sev-low: #2b4a63;
   --sev-malware: #8a1a8f;
-  --font-ui: "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
+  --font-ui: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
   --radius: 0px;
   --radius-sm: 0px;
   --shadow: 5px 5px 0 #111111;
@@ -116,7 +116,13 @@ html[data-theme="brutal"] .batch-summary th,
 html[data-theme="brutal"] table.types th { background: #111; color: #fff; }
 html[data-theme="brutal"] .batch-summary td { border-bottom: 2px solid #111; }
 
-html[data-theme="brutal"] .package[data-sev] { border-left-width: 10px; }
+/* Same 3px black border on all sides. The severity colour is a stripe just inside the left edge,
+   so it no longer reads as a thicker border. */
+html[data-theme="brutal"] .packages > .package[data-sev="malware"] { box-shadow: var(--shadow), inset 8px 0 0 var(--sev-malware); }
+html[data-theme="brutal"] .packages > .package[data-sev="critical"] { box-shadow: var(--shadow), inset 8px 0 0 var(--sev-critical); }
+html[data-theme="brutal"] .packages > .package[data-sev="high"] { box-shadow: var(--shadow), inset 8px 0 0 var(--sev-high); }
+html[data-theme="brutal"] .packages > .package[data-sev="medium"] { box-shadow: var(--shadow), inset 8px 0 0 var(--sev-medium); }
+html[data-theme="brutal"] .packages > .package[data-sev="low"] { box-shadow: var(--shadow), inset 8px 0 0 var(--sev-low); }
 
 html[data-theme="brutal"] .compare-board .cell { border-color: #111; }
 
@@ -131,11 +137,25 @@ html[data-theme="brutal"] .tabs a { border: 3px solid transparent; font-weight: 
 html[data-theme="brutal"] .tabs a:hover { border-color: #111; background: var(--accent-soft); }
 html[data-theme="brutal"] .tabs a[aria-current="page"] { border-color: #111; background: var(--accent); color: #fff; box-shadow: 3px 3px 0 #111; }
 
-html[data-theme="brutal"] .history-row,
+html[data-theme="brutal"] .history-list,
 html[data-theme="brutal"] .page-card,
-html[data-theme="brutal"] #compare-hint,
-html[data-theme="brutal"] .history-empty { border: 3px solid #111; }
+html[data-theme="brutal"] #compare-hint { border: 3px solid #111; }
 
-html[data-theme="brutal"] .history-row:hover { background: var(--accent-soft); border-color: #111; }
-html[data-theme="brutal"] .history-row:active { transform: translate(3px, 3px); box-shadow: 0 0 0 #111; }
+html[data-theme="brutal"] .history-group > .history-list { border: 0; border-top: 3px solid #111; }
+html[data-theme="brutal"] .history-item,
+html[data-theme="brutal"] .history-list > li > .history-group,
+html[data-theme="brutal"] .history-skeleton { border-bottom: 3px solid #111; }
+html[data-theme="brutal"] .history-item:last-child,
+html[data-theme="brutal"] .history-list > li:last-child > .history-group,
+html[data-theme="brutal"] .history-skeleton:last-child { border-bottom: 0; }
+html[data-theme="brutal"] .history-item:hover,
+html[data-theme="brutal"] .history-group > summary:hover { background: var(--accent-soft); }
+html[data-theme="brutal"] .history-head { color: #111; }
+html[data-theme="brutal"] .history-action { border: 2px solid #111; color: #111; }
+html[data-theme="brutal"] .history-action:hover,
+html[data-theme="brutal"] .history-action.is-on { background: var(--accent); color: #fff; box-shadow: 2px 2px 0 #111; }
 html[data-theme="brutal"] .chip { border: 2px solid #111; border-radius: 0; background: #fff; color: #111; }
+
+html[data-theme="brutal"] #state-report,
+html[data-theme="brutal"] #state-batch,
+html[data-theme="brutal"] #compare-result { border: 3px solid #111; }

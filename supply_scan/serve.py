@@ -20,10 +20,13 @@ from supply_scan.acquire import (
     short_acquire_error,
 )
 from supply_scan.compare import compare_reports
+from supply_scan.markdown import render_markdown
+from supply_scan.report import exit_code, snapshot_from_report
 from supply_scan.inventory import is_scan_manifest_relpath
 from supply_scan.locate import find_folder
 from supply_scan.ignore import read_ignores, set_ignored
 from supply_scan.match import MatchError
+from supply_scan.prefs import read_prefs, update_prefs
 from supply_scan.run import MAX_BATCH_TARGETS, TargetSpec, run_batch, run_scan, run_tree
 from supply_scan.scans import delete_scan, list_scans, load_scan, save_scan, set_pinned
 
@@ -31,9 +34,12 @@ PAGE = Path(__file__).resolve().parent.parent / "gui" / "index.html"
 GUI_DIR = PAGE.parent
 
 
-def gui_stylesheet(name: str) -> Path | None:
-    """Return a .css file inside gui/ for a request path, or None."""
-    if not name.endswith(".css"):
+GUI_ASSET_TYPES = {".css": "text/css; charset=utf-8", ".woff2": "font/woff2"}
+
+
+def gui_asset(name: str) -> Path | None:
+    """Return a stylesheet or font inside gui/ for a request path, or None."""
+    if not name.endswith(tuple(GUI_ASSET_TYPES)):
         return None
     candidate = (GUI_DIR / name).resolve()
     if GUI_DIR.resolve() not in candidate.parents or not candidate.is_file():
@@ -69,6 +75,22 @@ def compare_response(payload: dict | None) -> tuple[int, dict]:
     if current is None or previous is None:
         return 400, {"error": "Pick two saved scans."}
     return 200, compare_reports(current, previous)
+
+
+def markdown_response(payload: dict | None) -> tuple[int, dict]:
+    report = payload.get("report") if isinstance(payload, dict) else None
+    if not isinstance(report, dict) or not isinstance(report.get("packages"), list):
+        return 400, {"error": "That is not a supply-scan report."}
+    snapshot = snapshot_from_report(report)
+    strict = bool(payload.get("strict"))
+    recorded = report.get("exit_code")
+    if recorded in (0, 1):
+        # a report keeps its own exit code, so pick the rule that reproduces it
+        for candidate in (False, True):
+            if exit_code(snapshot.packages, candidate) == recorded:
+                strict = candidate
+                break
+    return 200, {"markdown": render_markdown(snapshot, strict=strict)}
 
 
 def delete_response(payload: dict | None) -> tuple[int, dict]:
@@ -336,6 +358,9 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = ignore_response("GET")
             self._send(status, payload)
             return
+        if path == "/prefs":
+            self._send(200, {"prefs": read_prefs()})
+            return
         if path == "/scans":
             self._send(200, {"scans": list_scans()})
             return
@@ -347,13 +372,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, report)
             return
         content_type = "text/html; charset=utf-8"
+        cache = "no-store"
         if path.startswith("/gui/"):
-            asset = gui_stylesheet(path.removeprefix("/gui/"))
+            asset = gui_asset(path.removeprefix("/gui/"))
             if asset is None:
                 self.send_error(404)
                 return
             body = asset.read_bytes()
-            content_type = "text/css; charset=utf-8"
+            content_type = GUI_ASSET_TYPES[asset.suffix]
+            cache = "public, max-age=86400" if asset.suffix == ".woff2" else "no-store"
         elif path in ("/", "/index.html"):
             body = PAGE.read_bytes()
         else:
@@ -362,7 +389,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.end_headers()
         self.wfile.write(body)
 
@@ -370,11 +397,11 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path not in (
             "/scan", "/scan/batch", "/ignores", "/compare", "/branches", "/locate-folder",
-            "/scans/delete", "/scans/pin",
+            "/scans/delete", "/scans/pin", "/prefs", "/report/markdown",
         ):
             self.send_error(404)
             return
-        payload, error = self._read_json(MAX_SCAN_BODY if path in ("/scan", "/scan/batch") else MAX_BODY)
+        payload, error = self._read_json(MAX_SCAN_BODY if path in ("/scan", "/scan/batch", "/report/markdown") else MAX_BODY)
         if error is not None:
             self._send(400, {"error": error})
             return
@@ -386,6 +413,10 @@ class Handler(BaseHTTPRequestHandler):
             status, body = locate_response(payload)
         elif path == "/compare":
             status, body = compare_response(payload)
+        elif path == "/report/markdown":
+            status, body = markdown_response(payload)
+        elif path == "/prefs":
+            status, body = 200, {"prefs": update_prefs(payload)}
         elif path == "/scans/delete":
             status, body = delete_response(payload)
         elif path == "/scans/pin":

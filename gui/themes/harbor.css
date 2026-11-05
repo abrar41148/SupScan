@@ -20,8 +20,8 @@ html[data-theme="harbor"] {
   --sev-medium: #85600a;
   --sev-low: #3f6070;
   --sev-malware: #7a1f5c;
-  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
+  --font-ui: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
   --radius: 14px;
   --radius-sm: 9px;
   --shadow: 0 1px 2px rgb(20 50 60 / 0.06), 0 8px 24px rgb(20 50 60 / 0.06);
