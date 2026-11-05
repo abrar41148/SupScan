@@ -131,6 +131,7 @@ def run_batch(
     strict: bool = False,
     use_cache: bool = True,
     on_progress=None,
+    fail_on: str | None = None,
 ) -> tuple[int, list[dict], list[Snapshot]]:
     """Scan up to four targets with one shared OSV pass."""
     if not targets:
@@ -218,7 +219,7 @@ def run_batch(
                 branch=inventory.branch,
                 packages=inventory.packages,
             )
-            code = exit_code(inventory.packages, strict)
+            code = exit_code(inventory.packages, strict, fail_on)
         snapshots.append(snapshot)
         report = json.loads(render_json(snapshot))
         report["exit_code"] = code

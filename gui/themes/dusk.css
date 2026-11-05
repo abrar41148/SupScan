@@ -20,8 +20,8 @@ html[data-theme="dusk"] {
   --sev-medium: #f0d27a;
   --sev-low: #9fb2d6;
   --sev-malware: #e29cf0;
-  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
+  --font-ui: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
   --radius: 20px;
   --radius-sm: 12px;
   --shadow: 0 2px 4px rgb(0 0 0 / 0.25), 0 12px 32px rgb(5 8 18 / 0.35);

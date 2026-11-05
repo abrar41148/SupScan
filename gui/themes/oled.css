@@ -1,0 +1,32 @@
+/* OLED: true black background so pixels switch off, with a cyan accent. */
+html[data-theme="oled"] {
+  --scheme: dark;
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --surface-2: #141414;
+  --text: #ededed;
+  --text-mute: #9b9b9b;
+  --border: #1f1f1f;
+  --border-strong: #5c5c5c;
+  --accent: #22d3ee;
+  --accent-ink: #001417;
+  --accent-soft: #08262c;
+  --danger: #ff6b6b;
+  --danger-soft: #2a0d0d;
+  --ok: #4ade80;
+  --ok-soft: #0b2415;
+  --sev-critical: #ff6b6b;
+  --sev-high: #ff9a4d;
+  --sev-medium: #f5cf4a;
+  --sev-low: #8fb4c9;
+  --sev-malware: #e58cf5;
+  --font-ui: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: none;
+  --density: 1;
+  --text-scale: 1;
+}
+
+html[data-theme="oled"] .top { background: #000000; }

@@ -20,8 +20,8 @@ html[data-theme="signal"] {
   --sev-medium: #f2d04b;
   --sev-low: #8ea3b5;
   --sev-malware: #d98cf0;
-  --font-ui: "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
+  --font-ui: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
   --radius: 5px;
   --radius-sm: 3px;
   --shadow: 0 1px 0 rgb(255 255 255 / 0.03) inset;

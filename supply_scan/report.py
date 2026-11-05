@@ -156,6 +156,41 @@ def _package_dict(package: Package) -> dict:
     }
 
 
+def snapshot_from_report(report: dict) -> Snapshot:
+    """The reverse of render_json, for reports saved earlier or opened from a file."""
+    packages = []
+    for row in report.get("packages") or []:
+        package = Package(
+            str(row.get("ecosystem") or ""),
+            str(row.get("name") or ""),
+            row.get("version"),
+            bool(row.get("direct")),
+            bool(row.get("dev")),
+            str(row.get("manifest") or ""),
+            row.get("unchecked_reason"),
+            recommend=row.get("recommend"),
+            alias=row.get("alias"),
+        )
+        for item in row.get("vulns") or []:
+            package.vulns.append(Finding(
+                str(item.get("id") or "unknown"),
+                item.get("cve"),
+                str(item.get("severity") or "unknown"),
+                str(item.get("summary") or ""),
+                item.get("fixed_in"),
+                str(item.get("kind") or "vulnerability"),
+                True,
+                tuple(item.get("related_ids") or ()),
+            ))
+        packages.append(package)
+    return Snapshot(
+        target=str(report.get("target") or ""),
+        commit=report.get("commit"),
+        branch=report.get("branch"),
+        packages=packages,
+    )
+
+
 def render_json(snapshot: Snapshot) -> str:
     vulnerable = sum(1 for package in snapshot.packages if package.vulns)
     unchecked = sum(1 for package in snapshot.packages if package.unchecked_reason)
@@ -195,17 +230,37 @@ def worst_exit_code(codes: list[int]) -> int:
     return 0
 
 
-def exit_code(packages: list[Package], strict: bool) -> int:
+FAIL_LEVELS = ("critical", "high", "medium", "low", "unknown", "none")
+
+
+def fail_threshold(strict: bool, fail_on: str | None = None) -> str:
+    return fail_on or ("medium" if strict else "high")
+
+
+def finding_fails(package: Package, finding: Finding, strict: bool, fail_on: str | None = None) -> bool:
+    """True when this finding breaks the rule.
+
+    Malware always fails. Otherwise a finding fails when its severity is at or above
+    the threshold: fail_on if given, else "medium" under strict and "high" without.
+    Dev-only packages are skipped unless strict. Unchecked packages never fail here.
+    "none" turns the severity rule off (malware still fails).
+    """
+    if package.unchecked_reason:
+        return False
+    if finding.kind == "malware":
+        return True
+    if package.dev and not strict:
+        return False
+    level = fail_threshold(strict, fail_on)
+    if level == "none":
+        return False
+    return finding.severity in FAIL_LEVELS[: FAIL_LEVELS.index(level) + 1]
+
+
+def exit_code(packages: list[Package], strict: bool, fail_on: str | None = None) -> int:
+    """1 when any finding breaks the rule in finding_fails, else 0."""
     for package in packages:
-        if package.unchecked_reason:
-            continue
-        if any(finding.kind == "malware" for finding in package.vulns):
-            return 1
-        if package.dev and not strict:
-            continue
         for finding in package.vulns:
-            if finding.severity in ("critical", "high"):
-                return 1
-            if strict and finding.severity == "medium":
+            if finding_fails(package, finding, strict, fail_on):
                 return 1
     return 0

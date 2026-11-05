@@ -10,8 +10,24 @@
       try { theme = localStorage.getItem("supply-scan-theme") || ""; } catch (err) {}
       if (!theme) theme = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "midnight" : "harbor";
       document.documentElement.dataset.theme = theme;
+      // Shared with applyAccent below; running it here means a saved accent is
+      // in place before first paint instead of flashing the theme default.
+      window.setAccent = function (hex) {
+        var root = document.documentElement;
+        var r = parseInt(hex.slice(1, 3), 16);
+        var g = parseInt(hex.slice(3, 5), 16);
+        var b = parseInt(hex.slice(5, 7), 16);
+        var luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        root.style.setProperty("--accent", hex);
+        root.style.setProperty("--accent-soft", "color-mix(in srgb, " + hex + " 20%, #000000)");
+        root.style.setProperty("--accent-ink", luma > 0.55 ? "#000000" : "#ffffff");
+      };
+      var accent = "";
+      try { accent = localStorage.getItem("supply-scan-accent") || ""; } catch (err) {}
+      if (theme === "oled" && /^#[0-9a-f]{6}$/i.test(accent)) window.setAccent(accent);
     })();
   </script>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230c6b62' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2.5l8 3v6c0 4.8-3.3 8.9-8 10-4.7-1.1-8-5.2-8-10v-6z'/%3E%3Cpath d='M8.5 12l2.5 2.5 4.5-5'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/gui/base.css">
   <link rel="stylesheet" href="/gui/themes/harbor.css">
   <link rel="stylesheet" href="/gui/themes/midnight.css">
@@ -19,6 +35,7 @@
   <link rel="stylesheet" href="/gui/themes/signal.css">
   <link rel="stylesheet" href="/gui/themes/dusk.css">
   <link rel="stylesheet" href="/gui/themes/brutal.css">
+  <link rel="stylesheet" href="/gui/themes/oled.css">
 </head>
 <body data-page="scan">
   <header class="top">
@@ -29,6 +46,7 @@
       <a href="#/compare" data-page="compare">Compare</a>
     </nav>
     <div class="top-actions">
+      <label class="color-pick" id="accent-wrap" hidden><span>Accent</span><input type="color" id="accent-pick" value="#22d3ee"></label>
       <label class="theme-pick"><span>Theme</span><select id="theme"></select></label>
       <button class="scan" type="button" id="scan">Scan</button>
     </div>
@@ -99,6 +117,10 @@
       <div class="page-head">
         <h2>History</h2>
         <p class="help">Saved scans stay here. Open one to see its full report.</p>
+        <div class="history-tools">
+        <input type="text" id="history-search" placeholder="Search repo, branch or commit" aria-label="Search history" autocomplete="off">
+        <label class="history-check"><input type="checkbox" id="history-vulnerable"> Has vulnerabilities</label>
+        <label class="history-check"><input type="checkbox" id="history-group"> Group by repo</label>
         <label class="history-sort">Sort by
           <select id="history-sort">
             <option value="date-desc">Date, descending</option>
@@ -111,8 +133,18 @@
             <option value="name-desc">Name, descending</option>
           </select>
         </label>
+        </div>
+        <p class="help" id="history-count" aria-live="polite"></p>
       </div>
-      <ul class="history-list" id="history-list"></ul>
+      <div class="history-head" id="history-head" aria-hidden="true">
+        <span>Repository</span><span>Branch</span><span class="num">Packages</span><span class="num">Vulnerable</span><span>Saved</span>
+      </div>
+      <ul class="history-list" id="history-list" aria-busy="true">
+        <li class="history-skeleton" aria-hidden="true"></li>
+        <li class="history-skeleton" aria-hidden="true"></li>
+        <li class="history-skeleton" aria-hidden="true"></li>
+        <li class="history-skeleton" aria-hidden="true"></li>
+      </ul>
     </section>
 
     <section class="page" id="page-compare" data-view="compare" aria-label="Compare">
@@ -829,53 +861,189 @@
       return [...entries].sort((a, b) => sign * compare(a, b) || HISTORY_SORTS.date(b, a));
     }
 
-    function setupHistorySort() {
+    function storedPref(key) {
+      try { return localStorage.getItem(key); } catch (err) { return null; }
+    }
+
+    function storePref(key, value) {
+      try { localStorage.setItem(key, value); } catch (err) {}
+    }
+
+    function setupHistoryTools() {
       const select = document.getElementById("history-sort");
-      try {
-        const saved = localStorage.getItem("supply-scan-history-sort");
-        if (saved && [...select.options].some((option) => option.value === saved)) select.value = saved;
-      } catch (err) {}
+      const group = document.getElementById("history-group");
+      const saved = storedPref("supply-scan-history-sort");
+      if (saved && [...select.options].some((option) => option.value === saved)) select.value = saved;
+      group.checked = storedPref("supply-scan-history-group") === "1";
       select.addEventListener("change", () => {
-        try { localStorage.setItem("supply-scan-history-sort", select.value); } catch (err) {}
+        storePref("supply-scan-history-sort", select.value);
         renderHistory(historyEntries);
       });
+      group.addEventListener("change", () => {
+        storePref("supply-scan-history-group", group.checked ? "1" : "0");
+        renderHistory(historyEntries);
+      });
+      for (const id of ["history-search", "history-vulnerable"]) {
+        document.getElementById(id).addEventListener("input", () => renderHistory(historyEntries));
+      }
+    }
+
+    function historyMatches(entry, query, vulnerableOnly) {
+      if (vulnerableOnly && !entry.vulnerable) return false;
+      if (!query) return true;
+      const haystack = [entry.target, entry.branch, entry.commit].join(" ").toLowerCase();
+      return query.split(/\s+/).every((word) => haystack.includes(word));
+    }
+
+    async function historyAction(path, body) {
+      try {
+        const response = await fetch(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (response.ok) fillScanLists((await response.json()).scans || []);
+      } catch (err) {}
+    }
+
+    const ICON_PIN = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6z"/><path d="M12 14v7"/></svg>';
+    const ICON_TRASH = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg>';
+
+    function iconButton(className, icon, label) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "history-action " + className;
+      button.innerHTML = icon;
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      return button;
+    }
+
+    function historyActions(entry) {
+      const actions = document.createElement("div");
+      actions.className = "history-actions";
+      const pin = iconButton(entry.pinned ? "is-on" : "", ICON_PIN, entry.pinned ? "Unpin scan" : "Pin scan");
+      pin.setAttribute("aria-pressed", entry.pinned ? "true" : "false");
+      pin.addEventListener("click", () => historyAction("/scans/pin", { id: entry.id, pinned: !entry.pinned }));
+      const remove = iconButton("danger", ICON_TRASH, "Delete scan");
+      let armed = 0;
+      remove.addEventListener("click", () => {
+        if (armed) {
+          clearTimeout(armed);
+          historyAction("/scans/delete", { id: entry.id });
+          return;
+        }
+        remove.title = "Click again to delete";
+        remove.setAttribute("aria-label", "Click again to confirm deleting this scan");
+        remove.classList.add("armed");
+        remove.append(line("span", "confirm-text", "Confirm"));
+        armed = setTimeout(() => {
+          armed = 0;
+          remove.title = "Delete scan";
+          remove.setAttribute("aria-label", "Delete scan");
+          remove.classList.remove("armed");
+          remove.querySelector(".confirm-text").remove();
+        }, 3000);
+      });
+      actions.append(pin, remove);
+      return actions;
+    }
+
+    function historyItem(entry) {
+      const item = document.createElement("li");
+      item.className = "history-item" + (entry.pinned ? " pinned" : "");
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "history-row";
+      const who = document.createElement("span");
+      who.className = "history-who";
+      who.append(
+        line("span", "history-name", repoBranch(entry.target) || "scan"),
+        line("span", "history-path", entry.target || ""),
+      );
+      const when = String(entry.saved_at || "").replace("T", " ").slice(0, 16);
+      const vulnerable = entry.vulnerable;
+      const stamp = line("span", "history-when", when);
+      if (entry.commit) stamp.append(line("span", "history-commit", String(entry.commit).slice(0, 8)));
+      row.append(
+        who,
+        line("span", "chip", entry.branch ? String(entry.branch) : "no branch"),
+        line("span", "history-num", entry.packages == null ? "" : String(entry.packages)),
+        line("span", "history-num" + (vulnerable ? " has-vulns" : ""), vulnerable == null ? "" : String(vulnerable)),
+        stamp,
+      );
+      row.addEventListener("click", () => openHistory(entry.id));
+      item.append(row, historyActions(entry));
+      return item;
+    }
+
+    function historyGroup(name, members, open) {
+      const item = document.createElement("li");
+      const details = document.createElement("details");
+      details.className = "history-group";
+      details.open = open;
+      const latest = members.reduce((a, b) => (HISTORY_SORTS.date(b, a) > 0 ? b : a));
+      const vulnerable = latest.vulnerable;
+      const summary = document.createElement("summary");
+      details.append(summary);
+      summary.append(
+        line("span", "history-name", name),
+        line("span", "history-group-meta", `${members.length} scan${members.length === 1 ? "" : "s"}`),
+        line("span", "history-group-meta" + (vulnerable ? " has-vulns" : ""),
+          vulnerable == null ? "" : `latest: ${vulnerable} vulnerable`),
+      );
+      const inner = document.createElement("ul");
+      inner.className = "history-list";
+      inner.append(...members.map(historyItem));
+      details.append(inner);
+      item.append(details);
+      return item;
     }
 
     function renderHistory(entries) {
       historyEntries = entries;
       const list = document.getElementById("history-list");
+      const count = document.getElementById("history-count");
       list.replaceChildren();
+      list.removeAttribute("aria-busy");
+      count.textContent = "";
+      document.getElementById("history-head").hidden = !entries.length;
       if (!entries.length) {
         const empty = document.createElement("li");
         empty.className = "history-empty";
-        empty.append(line("h3", "", "No saved scans yet"), line("p", "", "Run a scan and it will be saved here."));
+        const start = line("a", "history-empty-action", "Run a scan");
+        start.href = "#/scan";
+        empty.append(line("h3", "", "No saved scans yet"), line("p", "", "Every scan you run is saved here so you can reopen and compare it."), start);
         list.append(empty);
         return;
       }
-      const sorted = sortHistory(entries, document.getElementById("history-sort").value);
+      const query = document.getElementById("history-search").value.trim().toLowerCase();
+      const vulnerableOnly = document.getElementById("history-vulnerable").checked;
+      const shown = entries.filter((entry) => historyMatches(entry, query, vulnerableOnly));
+      count.textContent = `Showing ${shown.length} of ${entries.length} scans`;
+      if (!shown.length) {
+        const empty = document.createElement("li");
+        empty.className = "history-empty";
+        empty.append(line("h3", "", "No scans match"), line("p", "", "Try a different search or clear the filters."));
+        list.append(empty);
+        return;
+      }
+      const sorted = sortHistory(shown, document.getElementById("history-sort").value);
+      // pinned scans lead; the sort above keeps its order inside each half
+      sorted.sort((a, b) => Boolean(b.pinned) - Boolean(a.pinned));
+      if (!document.getElementById("history-group").checked) {
+        list.append(...sorted.map(historyItem));
+        return;
+      }
+      const groups = new Map();
       for (const entry of sorted) {
-        const item = document.createElement("li");
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "history-row";
-        const who = document.createElement("span");
-        who.className = "history-who";
-        who.append(
-          line("span", "history-name", repoBranch(entry.target) || "scan"),
-          line("span", "history-path", entry.target || ""),
-        );
-        const when = String(entry.saved_at || "").replace("T", " ").slice(0, 16);
-        row.append(
-          who,
-          line("span", "chip", entry.branch ? String(entry.branch) : "no branch"),
-          line("span", "history-counts", entry.packages == null ? "" :
-            `${entry.packages} packages · ${entry.vulnerable || 0} vulnerable`),
-          line("span", "history-when", when + (entry.commit ? "  " + String(entry.commit).slice(0, 8) : "")),
-          line("span", "history-go", "Open"),
-        );
-        row.addEventListener("click", () => openHistory(entry.id));
-        item.append(row);
-        list.append(item);
+        const name = repoBranch(entry.target) || "scan";
+        if (!groups.has(name)) groups.set(name, []);
+        groups.get(name).push(entry);
+      }
+      for (const [name, members] of groups) {
+        const open = Boolean(query) || groups.size === 1 || members.some((entry) => entry.pinned);
+        list.append(historyGroup(name, members, open));
       }
     }
 
@@ -1070,30 +1238,39 @@
       const same = (currentSide.target || "") === (previousSide.target || "");
       panel.append(line("p", "relation", same ? "Same repository" : "Different repositories"));
       const rows = data.rows || [];
-      const table = document.createElement("table");
-      table.className = "types";
-      const caption = line("caption", "sr", "How many dependencies fall in each kind of change");
-      table.append(caption);
-      const head = document.createElement("thead");
-      const headRow = document.createElement("tr");
-      headRow.append(line("th", "", "Change"));
-      headRow.append(line("th", "count", "Dependencies"));
-      head.append(headRow);
-      table.append(head);
-      const body = document.createElement("tbody");
-      let counted = 0;
-      for (const [key, title] of CHANGE_LABEL) {
-        const count = rows.filter((row) => row.change === key).length;
-        if (!count) continue;
-        counted += count;
-        const tr = document.createElement("tr");
-        tr.append(line("td", "", title));
-        tr.append(line("td", "count", String(count)));
-        body.append(tr);
+      const advisories = rows.flatMap((row) => row.advisories || []);
+      const appeared = advisories.filter((item) => item.status === "appeared").length;
+      const cleared = advisories.filter((item) => item.status === "cleared").length;
+      const tallies = document.createElement("div");
+      tallies.className = "diff-tallies";
+      for (const [label, count, kind] of [["New vulnerabilities", appeared, "bad"], ["Fixed vulnerabilities", cleared, "good"]]) {
+        const tile = document.createElement("div");
+        tile.className = "diff-tally " + kind;
+        tile.append(line("strong", "", String(count)), line("span", "", label));
+        tallies.append(tile);
       }
-      table.append(body);
-      if (counted) panel.append(table);
-      else panel.append(line("p", "quiet", "No dependency changes."));
+      panel.append(tallies);
+      const counts = CHANGE_LABEL
+        .map(([key, title]) => [key, title, rows.filter((row) => row.change === key).length])
+        .filter(([, , count]) => count);
+      if (counts.length) {
+        const bar = document.createElement("div");
+        bar.className = "diff-bar";
+        bar.setAttribute("role", "img");
+        bar.setAttribute("aria-label", counts.map(([, title, count]) => `${title}: ${count}`).join(", "));
+        const chips = document.createElement("ul");
+        chips.className = "diff-chips";
+        for (const [key, title, count] of counts) {
+          const segment = document.createElement("span");
+          segment.className = "diff-seg " + key;
+          segment.style.flexGrow = String(count);
+          bar.append(segment);
+          const chip = line("li", "diff-chip " + key, "");
+          chip.append(line("span", "dot", ""), line("span", "", title), line("strong", "", String(count)));
+          chips.append(chip);
+        }
+        panel.append(bar, chips);
+      } else panel.append(line("p", "quiet", "No dependency changes."));
 
       if (!rows.length) {
         showCompareResult();
@@ -1113,7 +1290,7 @@
       const missingBefore = [];
       for (const row of rows) {
         const pair = document.createElement("div");
-        pair.className = "pair";
+        pair.className = "pair " + (row.change || "");
         const left = document.createElement("div");
         left.className = "cell";
         const right = document.createElement("div");
@@ -1877,7 +2054,7 @@
     function reportFileName(data) {
       const entry = data.scan_id ? scanIndex.get(data.scan_id) : null;
       const branch = fileToken(data.branch, "no-branch");
-      return repoName(data.target) + "_" + branch + "_" + fileStamp(entry && entry.saved_at) + ".json";
+      return repoName(data.target) + "_" + branch + "_" + fileStamp(entry && entry.saved_at) + ".md";
     }
 
     function comparisonFileName(current, previous) {
@@ -1909,12 +2086,16 @@
     }
 
     async function writeJson(filename, payload) {
-      const blob = new Blob([JSON.stringify(payload, null, 2) + "\n"], { type: "application/json" });
-      if (window.showSaveFilePicker) {
+      await writeFile(filename, JSON.stringify(payload, null, 2) + "\n", "application/json", "JSON report", ".json");
+    }
+
+    async function writeFile(filename, text, mime, description, extension, picker = true) {
+      const blob = new Blob([text], { type: mime });
+      if (picker && window.showSaveFilePicker) {
         try {
           const handle = await window.showSaveFilePicker({
             suggestedName: filename,
-            types: [{ description: "JSON report", accept: { "application/json": [".json"] } }],
+            types: [{ description, accept: { [mime]: [extension] } }],
           });
           const writable = await handle.createWritable();
           await writable.write(blob);
@@ -1934,11 +2115,33 @@
       reportHelp.textContent = filename;
     }
 
-    document.getElementById("save").addEventListener("click", () => {
+    document.getElementById("save").addEventListener("click", async () => {
       if (!lastReport) return;
-      const copy = Object.assign({}, lastReport);
+      const report = lastReport;
+      const copy = Object.assign({}, report);
       delete copy.scan_id;
-      writeJson(reportFileName(lastReport), copy);
+      try {
+        const response = await fetch("/report/markdown", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ report: copy, strict: document.getElementById("strict").checked }),
+        });
+        const payload = await response.json();
+        if (!response.ok || typeof payload.markdown !== "string") {
+          reportHelp.textContent = (payload && payload.error) || "The report could not be saved.";
+          return;
+        }
+        // two files with one name, so no save dialog: a dialog needs a fresh click for each file
+        const name = reportFileName(report);
+        const stem = name.replace(/\.md$/, "");
+        await writeFile(name, payload.markdown, "text/markdown", "Markdown report", ".md", false);
+        await writeFile(
+          stem + ".json", JSON.stringify(copy, null, 2) + "\n", "application/json", "JSON report", ".json", false,
+        );
+        reportHelp.textContent = stem + ".md + .json";
+      } catch (err) {
+        reportHelp.textContent = "The report could not be saved.";
+      }
     });
 
     document.getElementById("save-compare").addEventListener("click", () => {
@@ -2011,6 +2214,7 @@
       { id: "signal", label: "Signal" },
       { id: "dusk", label: "Dusk" },
       { id: "brutal", label: "Brutal" },
+      { id: "oled", label: "OLED" },
     ];
 
     function setupThemePicker() {
@@ -2024,7 +2228,71 @@
       select.addEventListener("change", () => {
         document.documentElement.dataset.theme = select.value;
         try { localStorage.setItem("supply-scan-theme", select.value); } catch (err) {}
+        savePrefs({ theme: select.value });
+        applyAccent();
       });
+      const picker = document.getElementById("accent-pick");
+      try { picker.value = localStorage.getItem("supply-scan-accent") || picker.value; } catch (err) {}
+      // "change" too: some pickers only report the final colour that way.
+      for (const type of ["input", "change"]) {
+        picker.addEventListener(type, () => {
+          try { localStorage.setItem("supply-scan-accent", picker.value); } catch (err) {}
+          savePrefs({ accent: picker.value });
+          applyAccent();
+        });
+      }
+      applyAccent();
+      syncPrefs();
+    }
+
+    // localStorage is per address, so the choice also lives on the server. The
+    // server copy wins when it exists; otherwise this browser's choice seeds it.
+    function savePrefs(patch) {
+      fetch("/prefs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      }).catch(() => {});
+    }
+
+    async function syncPrefs() {
+      let prefs = {};
+      try {
+        const response = await fetch("/prefs");
+        if (!response.ok) return;
+        prefs = (await response.json()).prefs || {};
+      } catch (err) {
+        return;
+      }
+      const select = document.getElementById("theme");
+      const picker = document.getElementById("accent-pick");
+      const seed = {};
+      if (prefs.theme && THEMES.some((theme) => theme.id === prefs.theme)) {
+        select.value = prefs.theme;
+        document.documentElement.dataset.theme = prefs.theme;
+        try { localStorage.setItem("supply-scan-theme", prefs.theme); } catch (err) {}
+      } else seed.theme = select.value;
+      if (prefs.accent) {
+        picker.value = prefs.accent;
+        try { localStorage.setItem("supply-scan-accent", prefs.accent); } catch (err) {}
+      } else if (ACCENT_THEMES.includes(select.value) || storedPref("supply-scan-accent")) {
+        seed.accent = picker.value;
+      }
+      applyAccent();
+      if (Object.keys(seed).length) savePrefs(seed);
+    }
+
+    const ACCENT_THEMES = ["oled"];
+
+    function applyAccent() {
+      const root = document.documentElement;
+      const wrap = document.getElementById("accent-wrap");
+      const picker = document.getElementById("accent-pick");
+      const on = ACCENT_THEMES.includes(root.dataset.theme);
+      wrap.hidden = !on;
+      for (const name of ["--accent", "--accent-soft", "--accent-ink"]) root.style.removeProperty(name);
+      if (!on) return;
+      window.setAccent(picker.value);
     }
 
     function route() {
@@ -2046,7 +2314,7 @@
     window.addEventListener("hashchange", route);
     route();
     setupThemePicker();
-    setupHistorySort();
+    setupHistoryTools();
     loadIgnores();
     loadScans();
   </script>

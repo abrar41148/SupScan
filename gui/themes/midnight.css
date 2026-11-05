@@ -20,8 +20,8 @@ html[data-theme="midnight"] {
   --sev-medium: #e6c15a;
   --sev-low: #8fb3c4;
   --sev-malware: #e08bd0;
-  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
+  --font-ui: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
   --radius: 14px;
   --radius-sm: 9px;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 10 14 / 0.35);

@@ -6,11 +6,16 @@ import argparse
 import json
 import os
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 from supply_scan.acquire import AcquireError
 from supply_scan.match import MatchError
-from supply_scan.report import exit_code, render_html, render_json, render_text
+from supply_scan.ansi import colorize, use_color, verdict
+from supply_scan.banner import show as show_banner
+from supply_scan.markdown import render_markdown
+from supply_scan.progress import Progress
+from supply_scan.report import FAIL_LEVELS, exit_code, render_html, render_json, render_text
 from supply_scan.run import MAX_BATCH_TARGETS, TargetSpec, collect, run_batch
 
 
@@ -20,6 +25,15 @@ def _emit(text: str) -> None:
     except UnicodeEncodeError:
         encoding = sys.stdout.encoding or "utf-8"
         sys.stdout.buffer.write(text.encode(encoding, errors="replace"))
+
+
+def _emit_report(text: str) -> None:
+    _emit(colorize(text) if use_color(sys.stdout) else text)
+
+
+def _say_verdict(status: int) -> None:
+    if use_color(sys.stderr):
+        print(verdict(status), file=sys.stderr)
 
 
 def _json_path(base: str, index: int, count: int) -> str:
@@ -59,15 +73,24 @@ def _load_batch(path: Path) -> tuple[bool, list[TargetSpec]]:
     return strict, specs
 
 
+def _progress(args) -> Progress | None:
+    if args.no_progress:
+        return None
+    return Progress.create(sys.stderr, palette=getattr(args, "palette", None))
+
+
 def _run_single(args, specs: list[TargetSpec]) -> int:
     spec = specs[0]
+    progress = _progress(args)
     try:
-        snapshot, packages, cloned = collect(
-            spec.target,
-            spec.branch or args.branch,
-            git_token=args.git_token,
-            use_cache=not args.no_cache,
-        )
+        with progress or nullcontext():
+            snapshot, packages, cloned = collect(
+                spec.target,
+                spec.branch or args.branch,
+                git_token=args.git_token,
+                use_cache=not args.no_cache,
+                on_progress=progress.update if progress else None,
+            )
     except (AcquireError, MatchError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -79,12 +102,20 @@ def _run_single(args, specs: list[TargetSpec]) -> int:
     Path(json_path).write_text(render_json(snapshot), encoding="utf-8")
     if args.html:
         Path(args.html).write_text(render_html(snapshot), encoding="utf-8")
+    if args.markdown:
+        Path(args.markdown).write_text(
+            render_markdown(snapshot, strict=args.strict, fail_on=args.fail_on), encoding="utf-8"
+        )
 
-    _emit(text)
+    _emit_report(text)
     print(f"wrote {json_path}", file=sys.stderr)
     if args.html:
         print(f"wrote {args.html}", file=sys.stderr)
-    return exit_code(packages, args.strict)
+    if args.markdown:
+        print(f"wrote {args.markdown}", file=sys.stderr)
+    status = exit_code(packages, args.strict, args.fail_on)
+    _say_verdict(status)
+    return status
 
 
 def _run_multi(args, specs: list[TargetSpec]) -> int:
@@ -94,12 +125,16 @@ def _run_multi(args, specs: list[TargetSpec]) -> int:
             spec.branch = args.branch
         if shared and not spec.git_token:
             spec.git_token = shared
+    progress = _progress(args)
     try:
-        status, reports, snapshots = run_batch(
-            specs,
-            strict=args.strict,
-            use_cache=not args.no_cache,
-        )
+        with progress or nullcontext():
+            status, reports, snapshots = run_batch(
+                specs,
+                strict=args.strict,
+                fail_on=args.fail_on,
+                use_cache=not args.no_cache,
+                on_progress=progress.update if progress else None,
+            )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -111,13 +146,20 @@ def _run_multi(args, specs: list[TargetSpec]) -> int:
         snapshot_json = {key: value for key, value in report.items() if key not in ("exit_code", "error")}
         Path(json_path).write_text(json.dumps(snapshot_json, indent=2) + "\n", encoding="utf-8")
         print(f"wrote {json_path}", file=sys.stderr)
+        if args.markdown:
+            markdown_path = _json_path(args.markdown, index, count)
+            Path(markdown_path).write_text(
+                render_markdown(snapshot, strict=args.strict, fail_on=args.fail_on), encoding="utf-8"
+            )
+            print(f"wrote {markdown_path}", file=sys.stderr)
         if report.get("error"):
             print(f"{target}: {report['error']}", file=sys.stderr)
         if index:
             _emit("\n")
-        _emit(f"=== {target} ===\n")
+        _emit_report(f"=== {target} ===\n")
         if not report.get("error") or snapshot.packages:
-            _emit(render_text(snapshot))
+            _emit_report(render_text(snapshot))
+    _say_verdict(status)
     return status
 
 
@@ -142,12 +184,33 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also fail on dev dependencies and medium severity",
     )
+    parser.add_argument(
+        "--fail-on",
+        choices=FAIL_LEVELS,
+        help="Lowest severity that fails the run (default: high, or medium with --strict; none = malware only)",
+    )
     parser.add_argument("--json", default="supply-scan-report.json", help="JSON report path")
     parser.add_argument(
         "--html",
         nargs="?",
         const="supply-scan-report.html",
         help="Also write an HTML copy of the text report",
+    )
+    parser.add_argument(
+        "--markdown",
+        nargs="?",
+        const="supply-scan-report.md",
+        help="Also write a short markdown report (failing packages, links, advisories); one file per target",
+    )
+    parser.add_argument(
+        "--no-banner",
+        action="store_true",
+        help="Do not print the banner (it only shows on a terminal, never in CI or pipes)",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Do not draw the progress bar (it only shows on a terminal, never in CI or pipes)",
     )
     parser.add_argument(
         "--no-cache",
@@ -165,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         help="GitHub PAT for private HTTPS repos (or set GITHUB_TOKEN)",
     )
     args = parser.parse_args(argv)
+    args.palette = None if args.no_banner else show_banner()
 
     if args.zip_advisories:
         os.environ["SUPPLY_SCAN_ZIP_ADVISORIES"] = "1"

@@ -71,6 +71,33 @@ def load_scan(scan_id: str, root: Path | None = None) -> dict | None:
     return data
 
 
+def set_pinned(scan_id: str, pinned: bool, root: Path | None = None) -> bool:
+    root = scans_dir() if root is None else root
+    with _save_lock:
+        entries = _read_index(root)
+        entry = next((item for item in entries if item["id"] == scan_id), None)
+        if entry is None:
+            return False
+        if pinned:
+            entry["pinned"] = True
+        else:
+            entry.pop("pinned", None)
+        _write_index(root, entries)
+        return True
+
+
+def delete_scan(scan_id: str, root: Path | None = None) -> bool:
+    root = scans_dir() if root is None else root
+    with _save_lock:
+        entries = _read_index(root)
+        kept = [item for item in entries if item["id"] != scan_id]
+        if len(kept) == len(entries):
+            return False
+        _write_index(root, kept)
+        (root / f"{scan_id}.json").unlink(missing_ok=True)
+        return True
+
+
 def save_scan(report: dict, root: Path | None = None) -> dict:
     root = scans_dir() if root is None else root
     with _save_lock:

@@ -20,8 +20,8 @@ html[data-theme="paper"] {
   --sev-medium: #7a5a00;
   --sev-low: #475569;
   --sev-malware: #86198f;
-  --font-ui: "Cascadia Code", "Cascadia Mono", ui-monospace, monospace;
-  --font-mono: "Cascadia Code", "Cascadia Mono", ui-monospace, monospace;
+  --font-ui: "Geist Mono", "Cascadia Code", "Cascadia Mono", ui-monospace, monospace;
+  --font-mono: "Geist Mono", "Cascadia Code", "Cascadia Mono", ui-monospace, monospace;
   --radius: 3px;
   --radius-sm: 2px;
   --shadow: none;
